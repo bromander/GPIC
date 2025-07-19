@@ -190,6 +190,10 @@ class Gui:
         btn_view.pack(anchor="nw")
         btn_view.place(x=210, y=15)
 
+        #btn_view = tk.Button(text="File", command=None)
+        #btn_view.pack(anchor="nw")
+        #btn_view.place(width=60, height=30)
+
         self.Create_widgets.create_main_widgets(image)
 
         root.mainloop()
@@ -204,13 +208,15 @@ class Gui:
             self.create_image_viewer(image)
             self.create_compression_slider()
             self.create_size_looker_label()
+            #self.create_up_sliders()
 
         # creates text label with data of image sizes
         def create_size_looker_label(self) -> None:
             global size_looker_label
 
             size_looker_label = tk.Label(root,
-                                         text=f"Original image size: {self.Gui.format_size(os.path.getsize(path))}\nNow file size: {self.Gui.format_size(size_img)}",
+                                         text=f"Original image size: {self.Gui.format_size(os.path.getsize(path))}\n"
+                                              f"Now file size: {self.Gui.format_size(size_img)}",
                                          font=("Arial", 10))
             size_looker_label.pack(anchor="sw")
 
@@ -246,28 +252,24 @@ class Gui:
             global image_viewer_frame
 
             #creating frame of preview window
-            image_viewer_frame = tk.Frame(root, bg="grey", bd=5, relief=tk.GROOVE, width=350, height=350)
+            image_viewer_frame = tk.Frame(root, bg="white", bd=5, relief=tk.GROOVE)
             image_viewer_frame.pack(anchor="center", pady=100)
+            image_viewer_frame.configure(width=350, height=350)
+            image_viewer_frame.pack_propagate(False)
 
-            #getting frame and image sizes
-            image_width, image_height = image.size
-            frame_width, frame_height = (350, 350)
+            image.thumbnail((350, 350), Image.Resampling.LANCZOS)
 
-            #creating dimensions for the image so that it fits into the frame
-            scale_width = frame_width / image_width
-            scale_height = frame_height / image_height
-            scale = min(scale_width, scale_height)
-            new_width = int(image_width * scale)
-            new_height = int(image_height * scale)
-
-            #resizing image
-            image = image.resize((new_width, new_height))
             image_ = ImageTk.PhotoImage(image)
 
             #creating label with image
             image_label = tk.Label(image_viewer_frame, image=image_)
             image_label.image = image_
             image_label.pack(anchor="center")
+
+        def create_up_sliders(self) -> None:
+            file_frame = tk.Frame(root, bg="white", bd=0.5, relief=tk.SOLID)
+            file_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
+            file_frame.place(x=10, y=80, width=110, height=320)
 
 
     #updates image in preview window
