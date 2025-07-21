@@ -75,7 +75,9 @@ class Work_with_gppic:
             gray_pixels[gray_pixels > 10] = numpy.floor(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
 
 
-        size_img = len(zlib.compress(gray_pixels.tobytes()))
+        compressed = zlib.compress(gray_pixels.tobytes())
+
+        size_img = len(compressed)
 
         img.write(ToBytes.to_bytes_int(size_img, 4)) # writing len of bytes (pixel data)
 
@@ -83,7 +85,7 @@ class Work_with_gppic:
 
         logging.info(f"bytes size: {size_img}")
 
-        img.write(zlib.compress(gray_pixels.tobytes()))  # compressing pixels data by using the Deflate compression type and writing this to file
+        img.write(compressed)  # compressing pixels data by using the Deflate compression type and writing this to file
 
 
         img.write(ToBytes.to_bytes_str("T"))  # type of image
@@ -167,6 +169,7 @@ class ToBytes:
 class Gui:
     def __init__(self):
         self.Create_widgets = self.Create_widgets(self)
+        self.On_triggers = self.On_triggers(self)
 
     #creates main root window
     def create_window(self, image) -> None:
@@ -178,7 +181,7 @@ class Gui:
 
 
         #creating buttons
-        btn_view = tk.Button(text="Update Image", command=self.on_button_view_update_image)
+        btn_view = tk.Button(text="Update Image", command=self.On_triggers.on_button_view_update_image)
         btn_view.pack(anchor="nw")
         btn_view.place(x=15, y=15)
 
@@ -239,7 +242,7 @@ class Gui:
                 to=120,  # Максимальное значение
                 orient=tk.VERTICAL,  # Ориентация ползунка (HORIZONTAL или VERTICAL)
                 length=300,  # Длина ползунка
-                command=self.Gui.on_slider_compression  # Функция обратного вызова
+                command=self.Gui.On_triggers.on_slider_compression  # Функция обратного вызова
             )
 
             slider_compression.pack()
@@ -272,22 +275,64 @@ class Gui:
             file_frame.place(x=10, y=80, width=110, height=320)
 
 
-    #updates image in preview window
-    def on_button_view_update_image(self) -> None:
-        global file_image
+    class Get_windows:
 
-        print()
-        #re-creating image with new settings
-        pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
-        file_image = work_with_gppic.convert_to_Gppic(pixel_matrix)
-        file = work_with_gppic.open_image(file_image)
-        image_label.destroy()
+        # creates window for choosing folder to save something
+        @staticmethod
+        def get_folder(filetypes, defaultextension) -> str:
+            initialfile = ''.join(path.split("/")[-1:])
 
-        size_looker_label.destroy()
-        image_viewer_frame.destroy()
+            export_path = filedialog.asksaveasfilename(
+                defaultextension=defaultextension,
+                initialdir="/",
+                initialfile=''.join(initialfile.split(".")[:-1]),
+                filetypes=filetypes,
+                title="Save file as"
+            )
+            return export_path
 
-        self.Create_widgets.create_image_viewer(file)
-        self.Create_widgets.create_size_looker_label()
+
+        # creates window for choosing path and returns it
+        @staticmethod
+        def get_path(filetypes) -> str:
+            path = filedialog.askopenfilename(
+                title="Choose file",
+                filetypes=filetypes
+            )
+            return path
+
+
+    class On_triggers:
+
+        def __init__(self, gui_instance):
+            self.Gui = gui_instance
+
+        # updates image in preview window
+        def on_button_view_update_image(self) -> None:
+            global file_image
+
+            print()
+            # re-creating image with new settings
+            pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
+            file_image = work_with_gppic.convert_to_Gppic(pixel_matrix)
+            file = work_with_gppic.open_image(file_image)
+            image_label.destroy()
+
+            size_looker_label.destroy()
+            image_viewer_frame.destroy()
+
+            self.Gui.Create_widgets.create_image_viewer(file)
+            self.Gui.Create_widgets.create_size_looker_label()
+
+
+        # edits CUMpression value in Work_with_gppic class
+        @staticmethod
+        def on_slider_compression(value) -> None:
+            global work_with_gppic
+            work_with_gppic = Work_with_gppic(int(value))
+
+
+
 
     #edits CUMpression value in Work_with_gppic class
     @staticmethod
@@ -296,36 +341,10 @@ class Gui:
         work_with_gppic = Work_with_gppic(int(value))
 
 
-    #creates window for choosing path and returns it
-    @staticmethod
-    def get_path(filetypes) -> str:
-        path = filedialog.askopenfilename(
-            title="Choose file",
-            filetypes=filetypes
-        )
-        return path
-
-
-    #creates window for choosing folder to save something
-    @staticmethod
-    def get_folder(filetypes, defaultextension) -> str:
-
-        initialfile = ''.join(path.split("/")[-1:])
-
-        export_path = filedialog.asksaveasfilename(
-            defaultextension=defaultextension,
-            initialdir="/",
-            initialfile=''.join(initialfile.split(".")[:-1]),
-            filetypes=filetypes,
-            title="Save file as"
-        )
-        return export_path
-
-
     #exports image as .png
     def export_file_as_png(self, img) -> None:
 
-        export_path = self.get_folder([("png", "*.png"), ("All files", "*.*")], ".png")
+        export_path = self.Get_windows.get_folder([("png", "*.png"), ("All files", "*.*")], ".png")
         if export_path == "":
             pass
         else:
@@ -339,7 +358,7 @@ class Gui:
 
     #exports image in .gppic format
     def export_file(self, img) -> None:
-        export_path = self.get_folder([("gppic", "*.gppic"), ("All files", "*.*")], ".gppic")
+        export_path = self.Get_windows.get_folder([("gppic", "*.gppic"), ("All files", "*.*")], ".gppic")
         if export_path == "":
             pass
         else:
@@ -374,7 +393,7 @@ def main():
 
     work_with_gppic = Work_with_gppic(1) #default CUMpression force - 1
     gui = Gui()
-    path = gui.get_path([("Изображения", "*.png;*.jpg"), ("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")])
+    path = gui.Get_windows.get_path([("Изображения", "*.png;*.jpg"), ("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")])
 
 
     if path == "":
