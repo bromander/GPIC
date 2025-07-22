@@ -90,9 +90,14 @@ class Work_with_gppic:
         global size_img
 
         if self.compression_force not in range(0, 255):
-            raise ValueError(f"invalid value: {self.compression_force}. Acceptable values: from 1 to 255 inclusive")
+            raise ValueError(f"invalid value of compression forse: {self.compression_force}. Acceptable values: from 1 to 255 inclusive")
         else:
             logging.info("compression force: " + str(self.compression_force))
+
+        if int(self.compression_type) not in range(0, 3):
+            raise ValueError(f"invalid value of compression type: {self.compression_type}. Acceptable values: from 0 to 2 inclusive")
+        else:
+            logging.info("compression type: " + str(self.compression_type))
 
         sizeX = len(pixel_matrix[0])
         sizeY = len(pixel_matrix)
@@ -118,11 +123,11 @@ class Work_with_gppic:
         #compressing
 
         if self.compression_force != 1:
-            if self.compression_type == 1:
+            if int(self.compression_type) == 1:
                 gray_pixels[gray_pixels > 10] = numpy.round(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
-            elif self.compression_type == 2:
+            elif int(self.compression_type) == 2:
                 gray_pixels[gray_pixels > 10] = numpy.ceil(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
-            elif self.compression_type == 0:
+            elif int(self.compression_type) == 0:
                 gray_pixels[gray_pixels > 10] = numpy.floor(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
 
 
@@ -179,6 +184,8 @@ class Work_with_gppic:
 
                 pixels[:, :, 1] = pixels[:, :, 0]
                 pixels[:, :, 2] = pixels[:, :, 0]
+                pixels[pixels > 255] = 255
+                pixels[pixels < 0] = 0
 
                 index += size[0] * size[1]
 
@@ -211,7 +218,7 @@ class ToBytes:
         if text is None:
             raise ValueError("attribute 'text' not found.")
         if not isinstance(text, str):
-            raise TypeError("'text' shood be str.")
+            raise TypeError("'text' should be str.")
         try:
             return text.encode('ascii')
         except UnicodeEncodeError:
@@ -312,17 +319,25 @@ class Gui:
 
             file_menu = tk.Menu()
             file_save_as_menu = tk.Menu()
+            edit_menu = tk.Menu()
+            edit_compr_type_menu = tk.Menu()
 
             file_save_as_menu.add_command(label="Save as .GPPIC", command=lambda: self.Gui.export_file(file_image))
             file_save_as_menu.add_command(label="Save as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
+
+            edit_compr_type_menu.add_radiobutton(label="Light", command=lambda: self.Gui.On_triggers.on_edit_compression_type(2))
+            edit_compr_type_menu.add_radiobutton(label="Default", command=lambda: self.Gui.On_triggers.on_edit_compression_type(1))
+            edit_compr_type_menu.add_radiobutton(label="Dark", command=lambda: self.Gui.On_triggers.on_edit_compression_type(0))
 
             file_menu.add_command(label="New")
             file_menu.add_cascade(label="Save", menu=file_save_as_menu)
             file_menu.add_separator()
             file_menu.add_command(label="Exit", command=exit)
 
+            edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
+
             menu.add_cascade(label="File", menu=file_menu)
-            menu.add_cascade(label="Edit")
+            menu.add_cascade(label="Edit", menu=edit_menu)
             menu.configure(activeborderwidth=5)
 
 
@@ -386,6 +401,12 @@ class Gui:
             work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_type)
 
 
+        @staticmethod
+        def on_edit_compression_type(value) -> None:
+            global work_with_gppic
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_force, int(value))
+
+
     #exports image as .png
     def export_file_as_png(self, img) -> None:
 
@@ -436,7 +457,7 @@ def main():
     global path
     global file_image
 
-    work_with_gppic = Work_with_gppic(1, 0) #default CUMpression force - 1, default CUMpression type = 0
+    work_with_gppic = Work_with_gppic(1, 1) #default CUMpression force - 1, default CUMpression type = 1
     gui = Gui()
 
     gui.create_window()
