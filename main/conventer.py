@@ -11,46 +11,51 @@ import struct
 import os
 from concurrent.futures import ThreadPoolExecutor
 import functools
+from scipy.fftpack import dct, idct
 
 
 # pigar generate - create requirements.txt
 
+#handler that creates small loading window
 def loading_screen(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
 
+        #if user tries to close loading window instead of close will be called this function
         def disable_close():
             pass
 
         loading_win = tk.Toplevel(root)
         loading_win.title("Loading...")
         loading_win.transient(root)
-        loading_win.grab_set()
-        loading_win.protocol("WM_DELETE_WINDOW", disable_close)
+        loading_win.grab_set() #blocks user interaction with other windows of the program
+        loading_win.protocol("WM_DELETE_WINDOW", disable_close) #if user tries to close loading window instead of close will be called this function
 
         loading_win.update_idletasks()
-        w = loading_win.winfo_reqwidth()
-        h = loading_win.winfo_reqheight()
-        sw = loading_win.winfo_screenwidth()
-        sh = loading_win.winfo_screenheight()
-        x = (sw - w) // 2
-        y = (sh - h) // 2
-        loading_win.geometry(f"{200}x{100}+{x}+{y}")
 
+        w = loading_win.winfo_reqwidth() #gets loading window width
+        h = loading_win.winfo_reqheight() #gets loading window height
+        sw = loading_win.winfo_screenwidth() #gets screen width
+        sh = loading_win.winfo_screenheight() #gets screen height
+        x = (sw - w) // 2 #getting x and y centers
+        y = (sh - h) // 2
+        loading_win.geometry(f"{200}x{100}+{x}+{y}") #plasing window on screen
+
+        #setting window data:
         label_loading = tk.Label(loading_win, text="Loading...")
         label_loading.pack(anchor="n", pady=10)
-        pb = ttk.Progressbar(loading_win, mode="indeterminate")
+        pb = ttk.Progressbar(loading_win, mode="indeterminate") #mode "determinate" - progress just go to left/right. Mode "indeterminate" - progress will do ping - pong XD
         pb.pack(expand=True, fill="x", padx=20, pady=20)
-        pb.start(2)
+        pb.start(2) #makes the progressbar always move
 
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(func, *args, **kwargs)
 
             def check():
                 if future.done():
-                    loading_win.destroy()
+                    loading_win.destroy() #destoys loading window after compliting the function
                 else:
-                    loading_win.after(50, check)
+                    loading_win.after(50, check) #checks every 20ms "Is function complete?" (I think it is a little bit not optimized at all but the main thing is that it works)
 
             loading_win.after(50, check)
             root.wait_window(loading_win)
@@ -62,8 +67,9 @@ def loading_screen(func):
 #Class for working with gppic/other images files
 class Work_with_gppic:
 
-    def __init__(self, compression_force, compression_type):
-        self.compression_force = compression_force
+    def __init__(self, compression_dct_force, compression_quantization_force, compression_type):
+        self.compression_dct_force = compression_dct_force
+        self.compression_quantization_force = compression_quantization_force
         self.compression_type = compression_type
 
     #returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
@@ -71,7 +77,7 @@ class Work_with_gppic:
     @loading_screen
     def extract_pixels_from_png(path) -> list:
         if path == None:
-            raise ValueError("Attribute 'path' not found")
+            raise ValueError("'path' not found")
         else:
             with Image.open(path) as img:
 
@@ -80,14 +86,28 @@ class Work_with_gppic:
                 width, height = img.size
                 logging.info(f"Picture size: {width}x{height}")
 
-                logging.info("Getting pixel data...")
+                logging.debug("Getting pixel data...")
                 pixels = list(img.getdata())
 
-                logging.info("Loading pixel matrix...")
+                logging.debug("Loading pixel matrix...")
                 pixel_matrix = [
                     pixels[i * width:(i + 1) * width] for i in range(height)
                 ]
                 return pixel_matrix
+
+    @staticmethod
+    def dct2(block):
+        return dct(dct(block.T, norm='ortho').T, norm='ortho')
+
+    @staticmethod
+    def blockify(arr, block_size=8):
+        logging.debug("blocking array...")
+        h, w = arr.shape
+        pad_h = (-h) % block_size
+        pad_w = (-w) % block_size
+        arr_padded = numpy.pad(arr, ((0, pad_h), (0, pad_w)), mode='constant')
+        H, W = arr_padded.shape
+        return (arr_padded.reshape(H // block_size, block_size, W // block_size, block_size).swapaxes(1, 2)), (h, w)
 
     #converts list with png pixels to .gppic file in ram
     @loading_screen
@@ -95,113 +115,146 @@ class Work_with_gppic:
         global size_img
         global size_img_uncompress
 
-        if self.compression_force not in range(0, 255):
-            raise ValueError(f"invalid value of compression forse: {self.compression_force}. Acceptable values: from 1 to 255 inclusive")
-        else:
-            logging.info("compression force: " + str(self.compression_force))
+        if self.compression_dct_force not in range(0, 256):
+            raise ValueError(f"invalid value of compression_dct_force: {self.compression_dct_force}")
+        elif self.compression_quantization_force not in range(0, 256):
+            raise ValueError(f"invalid value of compression_dct_force: {self.compression_quantization_force}")
+        elif int(self.compression_type) not in range(0, 3):
+            raise ValueError(f"invalid value of compression type: {self.compression_type}")
 
-        if int(self.compression_type) not in range(0, 3):
-            raise ValueError(f"invalid value of compression type: {self.compression_type}. Acceptable values: from 0 to 2 inclusive")
-        else:
-            logging.info("compression type: " + str(self.compression_type))
+        logging.debug("writing main data...")
 
-        sizeX = len(pixel_matrix[0])
-        sizeY = len(pixel_matrix)
-
-        #creates file
+        sizeX, sizeY = len(pixel_matrix[0]), len(pixel_matrix)
         img = io.BytesIO()
-        img.seek(0)
+        img.write(b"\x89")
+        img.write(ToBytes.to_bytes_str("GPC\n"))
+        img.write(ToBytes.to_bytes_str("O"))
+        img.write(ToBytes.to_bytes_int(sizeX, 4))
+        img.write(ToBytes.to_bytes_int(sizeY, 4))
+        img.write(ToBytes.to_bytes_str("A"))
 
-        img.write(b"\x89")  # non readable ascii symbol
-        img.write(ToBytes.to_bytes_str("GPC\n"))  # name
+        logging.debug("creating array...")
 
-        img.write(ToBytes.to_bytes_str("O"))  # main chunk
-        img.write(ToBytes.to_bytes_int(sizeX, 4))  # X size of image
-        img.write(ToBytes.to_bytes_int(sizeY, 4))  # Y size of image
-
-        img.write(ToBytes.to_bytes_str("A"))  # start of required chunks
         pixels_array = numpy.array(pixel_matrix)
+        gray_pixels = (0.299 * pixels_array[..., 0] +
+                       0.587 * pixels_array[..., 1] +
+                       0.114 * pixels_array[..., 2]).astype(numpy.float32)
 
-        #creating list of numbers - values of pixel
-        gray_pixels = (0.299 * pixels_array[..., 0] + 0.587 * pixels_array[..., 1] + 0.114 * pixels_array[
-                ..., 2]).astype(numpy.uint8)
-
-        #compressing
-
-        if self.compression_force != 1:
+        logging.debug("compressing by quantization before DCT...")
+        if self.compression_quantization_force != 1:
             if int(self.compression_type) == 1:
-                gray_pixels[gray_pixels > 0] = numpy.round(gray_pixels[gray_pixels > 0] / self.compression_force) * self.compression_force
+                gray_pixels[gray_pixels != 0] = numpy.round(
+                    gray_pixels[
+                        gray_pixels != 0] / self.compression_quantization_force) * self.compression_quantization_force
             elif int(self.compression_type) == 2:
-                gray_pixels[gray_pixels > 0] = numpy.ceil(gray_pixels[gray_pixels > 0] / self.compression_force) * self.compression_force
+                gray_pixels[gray_pixels != 0] = numpy.ceil(
+                    gray_pixels[
+                        gray_pixels != 0] / self.compression_quantization_force) * self.compression_quantization_force
             elif int(self.compression_type) == 0:
-                gray_pixels[gray_pixels > 0] = numpy.floor(gray_pixels[gray_pixels > 0] / self.compression_force) * self.compression_force
+                gray_pixels[gray_pixels != 0] = numpy.floor(
+                    gray_pixels[
+                        gray_pixels != 0] / self.compression_quantization_force) * self.compression_quantization_force
 
-        size_img_uncompress = len(gray_pixels.tobytes())
+        blocks, orig_shape = self.blockify(gray_pixels, 8)
 
-        compressed = zlib.compress(gray_pixels.tobytes())
+        logging.debug("using DCT method...")
 
+        for i in range(blocks.shape[0]):
+            for j in range(blocks.shape[1]):
+                blocks[i, j] = self.dct2(blocks[i, j])
+
+        dct_data = (blocks.swapaxes(1, 2).reshape(blocks.shape[0] * 8, blocks.shape[1] * 8))[:orig_shape[0], :orig_shape[1]]
+
+        logging.debug("compressing by quantization DCT...")
+        if self.compression_dct_force != 1:
+            if int(self.compression_type) == 1:
+                dct_data[dct_data != 0] = numpy.round(dct_data[dct_data != 0] / self.compression_dct_force) * self.compression_dct_force
+            elif int(self.compression_type) == 2:
+                dct_data[dct_data != 0] = numpy.ceil(dct_data[dct_data != 0] / self.compression_dct_force) * self.compression_dct_force
+            elif int(self.compression_type) == 0:
+                dct_data[dct_data != 0] = numpy.floor(dct_data[dct_data != 0] / self.compression_dct_force) * self.compression_dct_force
+
+
+        gray_pixels_b = dct_data.astype(numpy.float32).tobytes()
+        size_img_uncompress = len(gray_pixels_b)
+
+        logging.debug("compressing by deflate...")
+
+        compressed = zlib.compress(gray_pixels_b)
         size_img = len(compressed)
 
-        img.write(ToBytes.to_bytes_int(size_img, 4)) # writing len of bytes (pixel data)
+        img.write(ToBytes.to_bytes_int(size_img, 4))
+        img.write(compressed)
 
+        img.write(ToBytes.to_bytes_str("T"))
+        img.write(ToBytes.to_bytes_str("IMG"))
+        img.write(ToBytes.to_bytes_str("E"))
 
-
-        logging.info(f"bytes size: {size_img}")
-
-        img.write(compressed)  # compressing pixels data by using the Deflate compression type and writing this to file
-
-
-        img.write(ToBytes.to_bytes_str("T"))  # type of image
-        img.write(ToBytes.to_bytes_str("IMG"))  # common image
-
-        img.write(ToBytes.to_bytes_str("E"))  # End.
         img.seek(0)
         return img
+
+    @staticmethod
+    def idct2(block):
+        return idct(idct(block.T, norm='ortho').T, norm='ortho')
+
+    @staticmethod
+    def unblockify(blocks, orig_shape, block_size=8):
+        logging.debug("unblocking array...")
+        h, w = orig_shape
+        n_v, n_h, _, _ = blocks.shape
+        full = (blocks.swapaxes(1, 2)
+                .reshape(n_v * block_size, n_h * block_size))
+        return full[:h, :w]
 
     #opens .gppic file and returns it like png image
     @loading_screen
     def open_image(self, img) -> Image.Image:
         pixels = []
         size = []
+        logging.debug("reading image...")
         img = img.read()
-
         index = 5
 
         while True:
-
             now_elem = img[index:index + 1]
 
-            if now_elem == b"O": # Getting main chunk data
+            if now_elem == b"O":
                 size = [struct.unpack('>I', img[index + 1:index + 5])[0],
                         struct.unpack('>I', img[index + 5:index + 9])[0]]
                 index += 8
 
-            if now_elem == b"A": # Getting required chunk data (pixel data)
-                bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0] #gets len of bytes(pixels)
+            if now_elem == b"A":
+                logging.debug("unpacking main data...")
+                bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0]
                 index += 5
+                logging.debug("decompressing main data...")
+                decompressed = zlib.decompress(img[index:index + bytes_len])
 
-                decompressed = zlib.decompress(img[index:index + bytes_len]) #decompressing pixels data by Deflate
-                img = img.replace(img[index:index + bytes_len], decompressed) #replasing compressed data to decompressed data
+                logging.debug("creating array...")
+                dct_data = numpy.frombuffer(decompressed, dtype=numpy.float32)
+                dct_data = dct_data.reshape(size[1], size[0])
 
-                pixels = numpy.zeros((size[1], size[0], 3), dtype=numpy.uint8)
+                blocks, _ = self.blockify(dct_data, 8)
+                logging.debug("unusing DCT method...")
+                for i in range(blocks.shape[0]):
+                    for j in range(blocks.shape[1]):
+                        blocks[i, j] = self.idct2(blocks[i, j])
 
-                data = img[index + 1:index + 1 + size[0] * size[1]]
+                restored = self.unblockify(blocks, size, 8)
 
-                pixels[:, :, 0] = numpy.frombuffer(data, dtype=numpy.uint8).reshape(size[1], size[0])
+                pixels_gray = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
 
-                pixels[:, :, 1] = pixels[:, :, 0]
-                pixels[:, :, 2] = pixels[:, :, 0]
-                pixels[pixels > 255] = 255
-                pixels[pixels < 0] = 0
+                logging.debug("Creating image...")
+                pixels = numpy.stack([pixels_gray] * 3, axis=-1)
 
-                index += size[0] * size[1]
+                index += bytes_len
 
-            if now_elem == b"E": # Breaking cycle on E chunk
+            if now_elem == b"E":
                 break
 
             index += 1
 
-        original_image = Image.fromarray(pixels) #creating from list of pixels image in png format
+        original_image = Image.fromarray(pixels)
         return ImageOps.exif_transpose(original_image)
 
 
@@ -262,7 +315,8 @@ class Gui:
         def create_main_widgets(self, image):
             self.create_menu()
             self.create_image_viewer(image)
-            self.create_compression_slider()
+            self.create_dct_compression_slider()
+            self.create_quantization_compression_slider()
             self.create_size_looker_label()
 
         # creates text label with data of image sizes
@@ -275,30 +329,59 @@ class Gui:
                                          font=("Arial", 10))
             size_looker_label.pack(anchor="sw")
 
-        #create slider for compression
-        def create_compression_slider(self) -> None:
-            compression_frame = tk.Frame(root, bg="lightblue", bd=5, relief=tk.GROOVE)
+        #create slider for DCT compression
+        def create_dct_compression_slider(self) -> None:
+            compression_frame = tk.Frame(root, bg="#FFADB0", bd=5, relief=tk.GROOVE)
             compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
-            compression_frame.place(x=10, y=80, width=110, height=320)
+            compression_frame.place(x=10, y=60, width=110, height=320)
 
-            slider_compression_label = tk.Label(compression_frame, text="compression", font=("Arial", 12),
-                                                bg="lightblue")
+            slider_compression_label = tk.Label(compression_frame, text="DCT\ncompression", font=("Arial", 12),
+                                                bg="#FFADB0")
+
             slider_compression_label.pack(anchor="center")
-            slider_compression_label.place(y=5)
+            slider_compression_label.place(x=1)
 
             slider_compression = tk.Scale(
                 compression_frame,
-                bg="lightblue",
+                bg="#FFADB0",
                 bd=3,
-                from_=1,  # Минимальное значение
-                to=120,  # Максимальное значение
-                orient=tk.VERTICAL,  # Ориентация ползунка (HORIZONTAL или VERTICAL)
-                length=300,  # Длина ползунка
-                command=self.Gui.On_triggers.on_slider_compression  # Функция обратного вызова
+                from_=10,
+                to=255,
+                orient=tk.VERTICAL,
+                length=300,
+                command=self.Gui.On_triggers.on_dct_slider_compression,
             )
 
             slider_compression.pack()
             slider_compression.place(height=250, y=45, x=25)
+
+            # create slider for quantization compression
+
+        #create slider for quantization compression
+        def create_quantization_compression_slider(self) -> None:
+                compression_frame = tk.Frame(root, bg="lightblue", bd=5, relief=tk.GROOVE)
+                compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
+                compression_frame.place(x=10, y=395, width=110, height=320)
+
+                slider_compression_label = tk.Label(compression_frame, text="quantization\ncompression", font=("Arial", 12),
+                                                    bg="lightblue")
+
+                slider_compression_label.pack(anchor="center")
+                slider_compression_label.place(x=1)
+
+                slider_compression = tk.Scale(
+                    compression_frame,
+                    bg="lightblue",
+                    bd=3,
+                    from_=1,
+                    to=120,
+                    orient=tk.VERTICAL,
+                    length=300,
+                    command=self.Gui.On_triggers.on_quantization_slider_compression,
+                )
+
+                slider_compression.pack()
+                slider_compression.place(height=250, y=45, x=25)
 
         #creates image preview window
         @staticmethod
@@ -410,17 +493,23 @@ class Gui:
             self.Gui.Create_widgets.create_size_looker_label()
 
 
-        # edits CUMpression value in Work_with_gppic class
+        # edits DST CUMpression value in Work_with_gppic class
         @staticmethod
-        def on_slider_compression(value) -> None:
+        def on_dct_slider_compression(value) -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_type)
+            work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_quantization_force, work_with_gppic.compression_type)
+
+        # edits quantization CUMpression value in Work_with_gppic class
+        @staticmethod
+        def on_quantization_slider_compression(value) -> None:
+            global work_with_gppic
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force, int(value), work_with_gppic.compression_type)
 
 
         @staticmethod
         def on_edit_compression_type() -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_force, edit_compr_type_menu_var.get())
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force, work_with_gppic.compression_quantization_force, edit_compr_type_menu_var.get())
             logging.debug(f"Compression type has been edited for {edit_compr_type_menu_var.get()}")
 
 
@@ -431,10 +520,12 @@ class Gui:
 
         @staticmethod
         def get_image_data():
-            compression_forse_data  = work_with_gppic.compression_force
+            dct_compression_forse_data  = work_with_gppic.compression_dct_force
+            quantization_compression_forse_data = work_with_gppic.compression_quantization_force
             compression_type_data = work_with_gppic.compression_type
 
-            showinfo(title="get_image_data", message=f"compression_forse : {compression_forse_data}"
+            showinfo(title="get_image_data", message=f"dct_compression_forse : {dct_compression_forse_data}"
+                                                     f"\nquantization_compression_forse_data : {quantization_compression_forse_data}"
                                                      f"\ncompression_type : {compression_type_data}\n"
                                                      f"\nbytes size : {size_img}"
                                                      f"\nuncompressed bytes size:  {size_img_uncompress}")
@@ -502,7 +593,7 @@ def main():
     global path
     global file_image
 
-    work_with_gppic = Work_with_gppic(1, 1) #default CUMpression force - 1, default CUMpression type = 1
+    work_with_gppic = Work_with_gppic(14, 1, 1) #default CUMpression force - 1, default CUMpression type = 1
     gui = Gui()
 
     gui.create_window()
@@ -523,5 +614,5 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.DEBUG)
+    logging.basicConfig(format='%(asctime)s : %(funcName)s : %(levelname)s : %(message)s', level=logging.DEBUG)
     main()
