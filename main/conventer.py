@@ -2,24 +2,68 @@ from PIL import Image, ImageTk, ImageOps
 import numpy
 from tkinter import filedialog
 import tkinter as tk
+from tkinter import ttk
 import zlib
 import io
 import logging
 import struct
 import os
+from concurrent.futures import ThreadPoolExecutor
+import functools
+
 
 # pigar generate - create requirements.txt
 
+def loading_screen(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+
+        loading_win = tk.Toplevel(root)
+        loading_win.title("Loading...")
+        loading_win.transient(root)
+        loading_win.grab_set()
+
+        loading_win.update_idletasks()
+        w = loading_win.winfo_reqwidth()
+        h = loading_win.winfo_reqheight()
+        sw = loading_win.winfo_screenwidth()
+        sh = loading_win.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        loading_win.geometry(f"{200}x{100}+{x}+{y}")
+
+        label_loading = tk.Label(loading_win, text="Loading...")
+        label_loading.pack(anchor="n", pady=10)
+        pb = ttk.Progressbar(loading_win, mode="indeterminate")
+        pb.pack(expand=True, fill="x", padx=20, pady=20)
+        pb.start(2)
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(func, *args, **kwargs)
+
+            def check():
+                if future.done():
+                    loading_win.destroy()
+                else:
+                    loading_win.after(50, check)
+
+            loading_win.after(50, check)
+            root.wait_window(loading_win)
+            return future.result()
+
+    return wrapper
 
 
 #Class for working with gppic/other images files
 class Work_with_gppic:
 
-    def __init__(self, compression_force):
+    def __init__(self, compression_force, compression_type):
         self.compression_force = compression_force
+        self.compression_type = compression_type
 
     #returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     @staticmethod
+    @loading_screen
     def extract_pixels_from_png(path) -> list:
         if path == None:
             raise ValueError("Attribute 'path' not found")
@@ -41,6 +85,7 @@ class Work_with_gppic:
                 return pixel_matrix
 
     #converts list with png pixels to .gppic file in ram
+    @loading_screen
     def convert_to_Gppic(self, pixel_matrix) -> io.BytesIO:
         global size_img
 
@@ -71,8 +116,14 @@ class Work_with_gppic:
                 ..., 2]).astype(numpy.uint8)
 
         #compressing
+
         if self.compression_force != 1:
-            gray_pixels[gray_pixels > 10] = numpy.floor(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
+            if self.compression_type == 1:
+                gray_pixels[gray_pixels > 10] = numpy.round(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
+            elif self.compression_type == 2:
+                gray_pixels[gray_pixels > 10] = numpy.ceil(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
+            elif self.compression_type == 0:
+                gray_pixels[gray_pixels > 10] = numpy.floor(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
 
 
         compressed = zlib.compress(gray_pixels.tobytes())
@@ -96,6 +147,7 @@ class Work_with_gppic:
         return img
 
     #opens .gppic file and returns it like png image
+    @loading_screen
     def open_image(self, img) -> Image.Image:
         pixels = []
         size = []
@@ -139,6 +191,7 @@ class Work_with_gppic:
         return ImageOps.exif_transpose(original_image)
 
 
+
 #Class for encoding int/str to a byte object
 class ToBytes:
     #encodes int to a byte object
@@ -172,34 +225,18 @@ class Gui:
         self.On_triggers = self.On_triggers(self)
 
     #creates main root window
-    def create_window(self, image) -> None:
+    def create_window(self) -> None:
         global root
 
         root = tk.Tk()
         root.title("gppic conventer")
-        root.geometry("800x600")
+        root.geometry("1000x800")
 
 
         #creating buttons
         btn_view = tk.Button(text="Update Image", command=self.On_triggers.on_button_view_update_image)
         btn_view.pack(anchor="nw")
         btn_view.place(x=15, y=15)
-
-        btn_view = tk.Button(text="Export Image", command=lambda: self.export_file(file_image))
-        btn_view.pack(anchor="nw")
-        btn_view.place(x=115, y=15)
-
-        btn_view = tk.Button(text="Export Image .PNG", command=lambda: self.export_file_as_png(file_image))
-        btn_view.pack(anchor="nw")
-        btn_view.place(x=210, y=15)
-
-        #btn_view = tk.Button(text="File", command=None)
-        #btn_view.pack(anchor="nw")
-        #btn_view.place(width=60, height=30)
-
-        self.Create_widgets.create_main_widgets(image)
-
-        root.mainloop()
 
 
     class Create_widgets:
@@ -208,10 +245,10 @@ class Gui:
             self.Gui = gui_instance
 
         def create_main_widgets(self, image):
+            self.create_menu()
             self.create_image_viewer(image)
             self.create_compression_slider()
             self.create_size_looker_label()
-            #self.create_up_sliders()
 
         # creates text label with data of image sizes
         def create_size_looker_label(self) -> None:
@@ -257,22 +294,39 @@ class Gui:
             #creating frame of preview window
             image_viewer_frame = tk.Frame(root, bg="white", bd=5, relief=tk.GROOVE)
             image_viewer_frame.pack(anchor="center", pady=100)
-            image_viewer_frame.configure(width=350, height=350)
+            image_viewer_frame.configure(width=550, height=550)
             image_viewer_frame.pack_propagate(False)
 
-            image.thumbnail((350, 350), Image.Resampling.LANCZOS)
+            image.thumbnail((550, 550), Image.Resampling.LANCZOS)
 
             image_ = ImageTk.PhotoImage(image)
 
             #creating label with image
-            image_label = tk.Label(image_viewer_frame, image=image_)
+            image_label = tk.Label(image_viewer_frame, image=image_, bg="white")
             image_label.image = image_
-            image_label.pack(anchor="center")
+            image_label.pack(anchor="center", ipady=200)
 
-        def create_up_sliders(self) -> None:
-            file_frame = tk.Frame(root, bg="white", bd=0.5, relief=tk.SOLID)
-            file_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
-            file_frame.place(x=10, y=80, width=110, height=320)
+        def create_menu(self) -> None:
+            menu = tk.Menu(root)
+            root.option_add("*tearOff", tk.FALSE)
+
+            file_menu = tk.Menu()
+            file_save_as_menu = tk.Menu()
+
+            file_save_as_menu.add_command(label="Save as .GPPIC", command=lambda: self.Gui.export_file(file_image))
+            file_save_as_menu.add_command(label="Save as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
+
+            file_menu.add_command(label="New")
+            file_menu.add_cascade(label="Save", menu=file_save_as_menu)
+            file_menu.add_separator()
+            file_menu.add_command(label="Exit", command=exit)
+
+            menu.add_cascade(label="File", menu=file_menu)
+            menu.add_cascade(label="Edit")
+            menu.configure(activeborderwidth=5)
+
+
+            root.config(menu=menu)
 
 
     class Get_windows:
@@ -329,16 +383,7 @@ class Gui:
         @staticmethod
         def on_slider_compression(value) -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(int(value))
-
-
-
-
-    #edits CUMpression value in Work_with_gppic class
-    @staticmethod
-    def on_slider_compression(value) -> None:
-        global work_with_gppic
-        work_with_gppic = Work_with_gppic(int(value))
+            work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_type)
 
 
     #exports image as .png
@@ -391,8 +436,11 @@ def main():
     global path
     global file_image
 
-    work_with_gppic = Work_with_gppic(1) #default CUMpression force - 1
+    work_with_gppic = Work_with_gppic(1, 0) #default CUMpression force - 1, default CUMpression type = 0
     gui = Gui()
+
+    gui.create_window()
+
     path = gui.Get_windows.get_path([("Изображения", "*.png;*.jpg"), ("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")])
 
 
@@ -402,11 +450,12 @@ def main():
     pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
     file_image = work_with_gppic.convert_to_Gppic(pixel_matrix)
 
-    gui.create_window(work_with_gppic.open_image(file_image))
+    gui.Create_widgets.create_main_widgets(work_with_gppic.open_image(file_image))
 
     logging.info("DONE")
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
+    logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.DEBUG)
     main()
