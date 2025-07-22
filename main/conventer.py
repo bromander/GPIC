@@ -3,6 +3,7 @@ import numpy
 from tkinter import filedialog
 import tkinter as tk
 from tkinter import ttk
+from tkinter.messagebox import showerror, showwarning, showinfo
 import zlib
 import io
 import logging
@@ -18,10 +19,14 @@ def loading_screen(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
 
+        def disable_close():
+            pass
+
         loading_win = tk.Toplevel(root)
         loading_win.title("Loading...")
         loading_win.transient(root)
         loading_win.grab_set()
+        loading_win.protocol("WM_DELETE_WINDOW", disable_close)
 
         loading_win.update_idletasks()
         w = loading_win.winfo_reqwidth()
@@ -88,6 +93,7 @@ class Work_with_gppic:
     @loading_screen
     def convert_to_Gppic(self, pixel_matrix) -> io.BytesIO:
         global size_img
+        global size_img_uncompress
 
         if self.compression_force not in range(0, 255):
             raise ValueError(f"invalid value of compression forse: {self.compression_force}. Acceptable values: from 1 to 255 inclusive")
@@ -130,6 +136,7 @@ class Work_with_gppic:
             elif int(self.compression_type) == 0:
                 gray_pixels[gray_pixels > 10] = numpy.floor(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
 
+        size_img_uncompress = len(gray_pixels.tobytes())
 
         compressed = zlib.compress(gray_pixels.tobytes())
 
@@ -230,6 +237,7 @@ class Gui:
     def __init__(self):
         self.Create_widgets = self.Create_widgets(self)
         self.On_triggers = self.On_triggers(self)
+        self.Debug = self.Debug(self)
 
     #creates main root window
     def create_window(self) -> None:
@@ -314,30 +322,38 @@ class Gui:
             image_label.pack(anchor="center", ipady=200)
 
         def create_menu(self) -> None:
+            global edit_compr_type_menu_var
             menu = tk.Menu(root)
             root.option_add("*tearOff", tk.FALSE)
 
             file_menu = tk.Menu()
             file_save_as_menu = tk.Menu()
             edit_menu = tk.Menu()
+            debug_menu = tk.Menu()
             edit_compr_type_menu = tk.Menu()
 
-            file_save_as_menu.add_command(label="Save as .GPPIC", command=lambda: self.Gui.export_file(file_image))
-            file_save_as_menu.add_command(label="Save as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
+            file_save_as_menu.add_command(label="Export as .GPPIC", command=lambda: self.Gui.export_file(file_image))
+            file_save_as_menu.add_command(label="Export as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
 
-            edit_compr_type_menu.add_radiobutton(label="Light", command=lambda: self.Gui.On_triggers.on_edit_compression_type(2))
-            edit_compr_type_menu.add_radiobutton(label="Default", command=lambda: self.Gui.On_triggers.on_edit_compression_type(1))
-            edit_compr_type_menu.add_radiobutton(label="Dark", command=lambda: self.Gui.On_triggers.on_edit_compression_type(0))
+            edit_compr_type_menu_var = tk.IntVar(value=1)
+            edit_compr_type_menu.add_radiobutton(label="Lighter", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=2)
+            edit_compr_type_menu.add_radiobutton(label="Grayer", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=1)
+            edit_compr_type_menu.add_radiobutton(label="Darker", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=0)
 
             file_menu.add_command(label="New")
-            file_menu.add_cascade(label="Save", menu=file_save_as_menu)
+            file_menu.add_cascade(label="Export", menu=file_save_as_menu)
             file_menu.add_separator()
             file_menu.add_command(label="Exit", command=exit)
 
             edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
 
+            debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
+            debug_menu.add_command(label="show_image", command=self.Gui.Debug.show_image)
+            debug_menu.add_command(label="show_original_image", command=self.Gui.Debug.show_original)
+
             menu.add_cascade(label="File", menu=file_menu)
             menu.add_cascade(label="Edit", menu=edit_menu)
+            menu.add_cascade(label="Debug", menu=debug_menu)
             menu.configure(activeborderwidth=5)
 
 
@@ -402,9 +418,38 @@ class Gui:
 
 
         @staticmethod
-        def on_edit_compression_type(value) -> None:
+        def on_edit_compression_type() -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_force, int(value))
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_force, edit_compr_type_menu_var.get())
+            logging.debug(f"Compression type has been edited for {edit_compr_type_menu_var.get()}")
+
+
+    class Debug:
+
+        def __init__(self, gui_instance):
+            self.Gui = gui_instance
+
+        @staticmethod
+        def get_image_data():
+            compression_forse_data  = work_with_gppic.compression_force
+            compression_type_data = work_with_gppic.compression_type
+
+            showinfo(title="get_image_data", message=f"compression_forse : {compression_forse_data}"
+                                                     f"\ncompression_type : {compression_type_data}\n"
+                                                     f"\nbytes size : {size_img}"
+                                                     f"\nuncompressed bytes size:  {size_img_uncompress}")
+
+        @staticmethod
+        def show_image():
+            file_image.seek(0)
+            img = work_with_gppic.open_image(file_image)
+            img.show()
+
+        @staticmethod
+        def show_original():
+            os.startfile(path)
+
+
 
 
     #exports image as .png
