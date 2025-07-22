@@ -130,11 +130,11 @@ class Work_with_gppic:
 
         if self.compression_force != 1:
             if int(self.compression_type) == 1:
-                gray_pixels[gray_pixels > 10] = numpy.round(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
+                gray_pixels[gray_pixels > 0] = numpy.round(gray_pixels[gray_pixels > 0] / self.compression_force) * self.compression_force
             elif int(self.compression_type) == 2:
-                gray_pixels[gray_pixels > 10] = numpy.ceil(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
+                gray_pixels[gray_pixels > 0] = numpy.ceil(gray_pixels[gray_pixels > 0] / self.compression_force) * self.compression_force
             elif int(self.compression_type) == 0:
-                gray_pixels[gray_pixels > 10] = numpy.floor(gray_pixels[gray_pixels > 10] / self.compression_force) * self.compression_force
+                gray_pixels[gray_pixels > 0] = numpy.floor(gray_pixels[gray_pixels > 0] / self.compression_force) * self.compression_force
 
         size_img_uncompress = len(gray_pixels.tobytes())
 
