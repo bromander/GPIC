@@ -115,6 +115,34 @@ class Work_with_gppic:
         global size_img
         global size_img_uncompress
 
+        '''
+                                logging.debug("unpacking main data...")
+                        bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0]
+                        index += 5
+                        logging.debug("decompressing main data...")
+                        decompressed = zlib.decompress(img[index:index + bytes_len])
+
+                        logging.debug("creating array...")
+                        dct_data = numpy.frombuffer(decompressed, dtype=numpy.float32)
+                        dct_data = dct_data.reshape(size[1], size[0])
+
+                        blocks, _ = self.blockify(dct_data, 8)
+                        logging.debug("unusing DCT method...")
+                        for i in range(blocks.shape[0]):
+                            for j in range(blocks.shape[1]):
+                                blocks[i, j] = self.idct2(blocks[i, j])
+
+                        restored = self.unblockify(blocks, size, 8)
+
+                        pixels_gray = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+                        logging.debug("Creating image...")
+                        pixels = numpy.stack([pixels_gray] * 3, axis=-1)
+
+                        index += bytes_len
+
+                '''
+
         if self.compression_dct_force not in range(0, 256):
             raise ValueError(f"invalid value of compression_dct_force: {self.compression_dct_force}")
         elif self.compression_quantization_force not in range(0, 256):
@@ -140,21 +168,6 @@ class Work_with_gppic:
                        0.587 * pixels_array[..., 1] +
                        0.114 * pixels_array[..., 2]).astype(numpy.float32)
 
-        logging.debug("compressing by quantization before DCT...")
-        if self.compression_quantization_force != 1:
-            if int(self.compression_type) == 1:
-                gray_pixels[gray_pixels != 0] = numpy.round(
-                    gray_pixels[
-                        gray_pixels != 0] / self.compression_quantization_force) * self.compression_quantization_force
-            elif int(self.compression_type) == 2:
-                gray_pixels[gray_pixels != 0] = numpy.ceil(
-                    gray_pixels[
-                        gray_pixels != 0] / self.compression_quantization_force) * self.compression_quantization_force
-            elif int(self.compression_type) == 0:
-                gray_pixels[gray_pixels != 0] = numpy.floor(
-                    gray_pixels[
-                        gray_pixels != 0] / self.compression_quantization_force) * self.compression_quantization_force
-
         blocks, orig_shape = self.blockify(gray_pixels, 8)
 
         logging.debug("using DCT method...")
@@ -177,6 +190,35 @@ class Work_with_gppic:
 
         gray_pixels_b = dct_data.astype(numpy.float32).tobytes()
         size_img_uncompress = len(gray_pixels_b)
+
+        dct_data = numpy.frombuffer(gray_pixels_b, dtype=numpy.float32)
+        dct_data = dct_data.reshape(sizeX, sizeY)
+
+        blocks, _ = self.blockify(dct_data, 8)
+        logging.debug("unusing DCT method...")
+        for i in range(blocks.shape[0]):
+            for j in range(blocks.shape[1]):
+                blocks[i, j] = self.idct2(blocks[i, j])
+
+        restored = self.unblockify(blocks, [sizeX, sizeY], 8)
+
+        gray_pixels_b = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+        logging.debug("compressing by quantization after DCT...")
+        if self.compression_quantization_force != 1:
+            if int(self.compression_type) == 1:
+                gray_pixels_b[gray_pixels_b != 0] = numpy.round(
+                    gray_pixels_b[
+                        gray_pixels_b != 0] / self.compression_quantization_force) * self.compression_quantization_force
+            elif int(self.compression_type) == 2:
+                gray_pixels_b[gray_pixels_b != 0] = numpy.ceil(
+                    gray_pixels_b[
+                        gray_pixels_b != 0] / self.compression_quantization_force) * self.compression_quantization_force
+            elif int(self.compression_type) == 0:
+                gray_pixels_b[gray_pixels_b != 0] = numpy.floor(
+                    gray_pixels_b[
+                        gray_pixels_b != 0] / self.compression_quantization_force) * self.compression_quantization_force
+
 
         logging.debug("compressing by deflate...")
 
@@ -224,30 +266,25 @@ class Work_with_gppic:
                 index += 8
 
             if now_elem == b"A":
-                logging.debug("unpacking main data...")
-                bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0]
+                bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0]  # gets len of bytes(pixels)
                 index += 5
-                logging.debug("decompressing main data...")
-                decompressed = zlib.decompress(img[index:index + bytes_len])
 
-                logging.debug("creating array...")
-                dct_data = numpy.frombuffer(decompressed, dtype=numpy.float32)
-                dct_data = dct_data.reshape(size[1], size[0])
+                decompressed = zlib.decompress(img[index:index + bytes_len])  # decompressing pixels data by Deflate
+                img = img.replace(img[index:index + bytes_len],
+                                  decompressed)  # replasing compressed data to decompressed data
 
-                blocks, _ = self.blockify(dct_data, 8)
-                logging.debug("unusing DCT method...")
-                for i in range(blocks.shape[0]):
-                    for j in range(blocks.shape[1]):
-                        blocks[i, j] = self.idct2(blocks[i, j])
+                pixels = numpy.zeros((size[1], size[0], 3), dtype=numpy.uint8)
 
-                restored = self.unblockify(blocks, size, 8)
+                data = img[index + 1:index + 1 + size[0] * size[1]]
 
-                pixels_gray = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+                pixels[:, :, 0] = numpy.frombuffer(data, dtype=numpy.uint8).reshape(size[1], size[0])
 
-                logging.debug("Creating image...")
-                pixels = numpy.stack([pixels_gray] * 3, axis=-1)
+                pixels[:, :, 1] = pixels[:, :, 0]
+                pixels[:, :, 2] = pixels[:, :, 0]
+                pixels[pixels > 255] = 255
+                pixels[pixels < 0] = 0
 
-                index += bytes_len
+                index += size[0] * size[1]
 
             if now_elem == b"E":
                 break
