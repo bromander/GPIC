@@ -75,7 +75,7 @@ class Work_with_gppic:
     #returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     @staticmethod
     @loading_screen
-    def extract_pixels_from_png(path) -> list:
+    def extract_pixels_from_png(path) -> list or None:
         if path == None:
             raise ValueError("'path' not found")
         else:
@@ -96,11 +96,11 @@ class Work_with_gppic:
                 return pixel_matrix
 
     @staticmethod
-    def dct2(block):
+    def dct2(block) -> numpy.ndarray:
         return dct(dct(block.T, norm='ortho').T, norm='ortho')
 
     @staticmethod
-    def blockify(arr, block_size=8):
+    def blockify(arr, block_size=8) -> tuple:
         logging.debug("blocking array...")
         h, w = arr.shape
         pad_h = (-h) % block_size
@@ -114,34 +114,6 @@ class Work_with_gppic:
     def convert_to_Gppic(self, pixel_matrix) -> io.BytesIO:
         global size_img
         global size_img_uncompress
-
-        '''
-                                logging.debug("unpacking main data...")
-                        bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0]
-                        index += 5
-                        logging.debug("decompressing main data...")
-                        decompressed = zlib.decompress(img[index:index + bytes_len])
-
-                        logging.debug("creating array...")
-                        dct_data = numpy.frombuffer(decompressed, dtype=numpy.float32)
-                        dct_data = dct_data.reshape(size[1], size[0])
-
-                        blocks, _ = self.blockify(dct_data, 8)
-                        logging.debug("unusing DCT method...")
-                        for i in range(blocks.shape[0]):
-                            for j in range(blocks.shape[1]):
-                                blocks[i, j] = self.idct2(blocks[i, j])
-
-                        restored = self.unblockify(blocks, size, 8)
-
-                        pixels_gray = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
-
-                        logging.debug("Creating image...")
-                        pixels = numpy.stack([pixels_gray] * 3, axis=-1)
-
-                        index += bytes_len
-
-                '''
 
         if self.compression_dct_force not in range(0, 256):
             raise ValueError(f"invalid value of compression_dct_force: {self.compression_dct_force}")
