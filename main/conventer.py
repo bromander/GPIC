@@ -12,6 +12,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 import functools
 from scipy.fftpack import dct, idct
+from typing import Optional, List, Tuple, BinaryIO
 
 
 # pigar generate - create requirements.txt
@@ -67,205 +68,232 @@ def loading_screen(func):
 #Class for working with gppic/other images files
 class Work_with_gppic:
 
-    def __init__(self, compression_dct_force, compression_quantization_force, compression_type):
+    def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 0):
         self.compression_dct_force = compression_dct_force
-        self.compression_quantization_force = compression_quantization_force
-        self.compression_type = compression_type
+        self.compression_quant_force = compression_quant_force
+        self.compression_type = compression_type  # 0=floor,1=round,2=ceil
+
+    @staticmethod
+    def extract_pixels_from_png(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
+        if path is None:
+            raise ValueError("'path' not found")
+        try:
+            with Image.open(path) as img:
+                img = img.convert("RGB")
+                width, height = img.size
+                logging.info(f"Picture size: {width}×{height}")
+
+                logging.debug("Getting pixel data…")
+                pixels = list(img.getdata())
+
+                logging.debug("Loading pixel matrix…")
+                pixel_matrix: List[List[Tuple[int, int, int]]] = [
+                    pixels[i * width:(i + 1) * width]
+                    for i in range(height)
+                ]
+                return pixel_matrix
+        except FileNotFoundError:
+            logging.error(f"File not found: {path}")
+            return None
 
     #returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     @staticmethod
-    @loading_screen
-    def extract_pixels_from_png(path) -> list or None:
-        if path == None:
-            raise ValueError("'path' not found")
-        else:
-            with Image.open(path) as img:
-
-                img = img.convert("RGB")
-
-                width, height = img.size
-                logging.info(f"Picture size: {width}x{height}")
-
-                logging.debug("Getting pixel data...")
-                pixels = list(img.getdata())
-
-                logging.debug("Loading pixel matrix...")
-                pixel_matrix = [
-                    pixels[i * width:(i + 1) * width] for i in range(height)
-                ]
-                return pixel_matrix
-
-    @staticmethod
-    def dct2(block) -> numpy.ndarray:
+    def _dct2(block: numpy.ndarray) -> numpy.ndarray:
         return dct(dct(block.T, norm='ortho').T, norm='ortho')
 
     @staticmethod
-    def blockify(arr, block_size=8) -> tuple:
-        logging.debug("blocking array...")
+    def _idct2(block: numpy.ndarray) -> numpy.ndarray:
+        return idct(idct(block.T, norm='ortho').T, norm='ortho')
+
+    @staticmethod
+    def _blockify(arr: numpy.ndarray, block_size: int = 8) -> Tuple[numpy.ndarray, Tuple[int, int]]:
         h, w = arr.shape
         pad_h = (-h) % block_size
         pad_w = (-w) % block_size
         arr_padded = numpy.pad(arr, ((0, pad_h), (0, pad_w)), mode='constant')
         H, W = arr_padded.shape
-        return (arr_padded.reshape(H // block_size, block_size, W // block_size, block_size).swapaxes(1, 2)), (h, w)
+        blocks = (arr_padded
+                  .reshape(H // block_size, block_size, W // block_size, block_size)
+                  .swapaxes(1, 2))
+        return blocks, (h, w)
+
+    @staticmethod
+    def _unblockify(blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8) -> numpy.ndarray:
+        n_v, n_h, _, _ = blocks.shape
+        padded = blocks.swapaxes(1, 2).reshape(n_v * block_size, n_h * block_size)
+        h, w = orig_shape
+        return padded[:h, :w]
+
+    @staticmethod
+    def _quantize(data: numpy.ndarray, force: int, method: int) -> numpy.ndarray:
+        if force != 1:
+            if int(method) == 1:
+                data[data != 0] = numpy.round(
+                    data[
+                        data != 0] / force) * force
+            elif int(method) == 2:
+                data[data != 0] = numpy.ceil(
+                    data[
+                        data != 0] / force) * force
+            elif int(method) == 0:
+                data[data != 0] = numpy.floor(
+                    data[
+                        data != 0] / force) * force
+        return data
 
     #converts list with png pixels to .gppic file in ram
     @loading_screen
-    def convert_to_Gppic(self, pixel_matrix) -> io.BytesIO:
-        global size_img
-        global size_img_uncompress
+    def convert_to_gppic(self, pixel_matrix: list) -> io.BytesIO:
+        global size_img, size_img_uncompress, size_img_uncompress_DCT
+        # Validate parameters
+        for name, val in [('DCT force', self.compression_dct_force),
+                          ('quant force', self.compression_quant_force)]:
+            if not (0 <= val < 256):
+                raise ValueError(f"Invalid {name}: {val}")
+        if self.compression_type not in {0, 1, 2}:
+            raise ValueError(f"Invalid compression type: {self.compression_type}")
 
-        if self.compression_dct_force not in range(0, 256):
-            raise ValueError(f"invalid value of compression_dct_force: {self.compression_dct_force}")
-        elif self.compression_quantization_force not in range(0, 256):
-            raise ValueError(f"invalid value of compression_dct_force: {self.compression_quantization_force}")
-        elif int(self.compression_type) not in range(0, 3):
-            raise ValueError(f"invalid value of compression type: {self.compression_type}")
+        height = len(pixel_matrix)
+        width = len(pixel_matrix[0]) if height else 0
+        buf = io.BytesIO()
 
-        logging.debug("writing main data...")
+        # Header: signature + dimensions
+        buf.write(b"\x89GPC\nO")
+        buf.write(struct.pack('>I', width))
+        buf.write(struct.pack('>I', height))
+        buf.write(b"A")
 
-        sizeX, sizeY = len(pixel_matrix[0]), len(pixel_matrix)
-        img = io.BytesIO()
-        img.write(b"\x89")
-        img.write(ToBytes.to_bytes_str("GPC\n"))
-        img.write(ToBytes.to_bytes_str("O"))
-        img.write(ToBytes.to_bytes_int(sizeX, 4))
-        img.write(ToBytes.to_bytes_int(sizeY, 4))
-        img.write(ToBytes.to_bytes_str("A"))
+        # Convert to grayscale
+        pixels = numpy.array(pixel_matrix, dtype=numpy.float32)
+        gray = (0.299 * pixels[..., 0] +
+                0.587 * pixels[..., 1] +
+                0.114 * pixels[..., 2]).astype(numpy.float32)
 
-        logging.debug("creating array...")
+        size_img_uncompress_DCT = gray.nbytes
 
-        pixels_array = numpy.array(pixel_matrix)
-        gray_pixels = (0.299 * pixels_array[..., 0] +
-                       0.587 * pixels_array[..., 1] +
-                       0.114 * pixels_array[..., 2]).astype(numpy.float32)
-
-        blocks, orig_shape = self.blockify(gray_pixels, 8)
-
-        logging.debug("using DCT method...")
-
+        # DCT compression
+        blocks, orig = self._blockify(gray)
         for i in range(blocks.shape[0]):
             for j in range(blocks.shape[1]):
-                blocks[i, j] = self.dct2(blocks[i, j])
+                blocks[i, j] = self._dct2(blocks[i, j])
+        dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * 8, blocks.shape[1] * 8)
+        dct_mat = dct_mat[:orig[0], :orig[1]]
+        dct_mat = self._quantize(dct_mat, self.compression_dct_force, self.compression_type)
 
-        dct_data = (blocks.swapaxes(1, 2).reshape(blocks.shape[0] * 8, blocks.shape[1] * 8))[:orig_shape[0], :orig_shape[1]]
+        raw = dct_mat.astype(numpy.float32).tobytes()
 
-        logging.debug("compressing by quantization DCT...")
-        if self.compression_dct_force != 1:
-            if int(self.compression_type) == 1:
-                dct_data[dct_data != 0] = numpy.round(dct_data[dct_data != 0] / self.compression_dct_force) * self.compression_dct_force
-            elif int(self.compression_type) == 2:
-                dct_data[dct_data != 0] = numpy.ceil(dct_data[dct_data != 0] / self.compression_dct_force) * self.compression_dct_force
-            elif int(self.compression_type) == 0:
-                dct_data[dct_data != 0] = numpy.floor(dct_data[dct_data != 0] / self.compression_dct_force) * self.compression_dct_force
+        # Inverse DCT reconstruction
+        inv = numpy.frombuffer(raw, dtype=numpy.float32).reshape(orig[0], orig[1])
+        blocks2, _ = self._blockify(inv)
+        for i in range(blocks2.shape[0]):
+            for j in range(blocks2.shape[1]):
+                blocks2[i, j] = self._idct2(blocks2[i, j])
+        restored = self._unblockify(blocks2, orig)
+        restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
 
+        # Quantization post-inverse
+        restored = self._quantize(restored, self.compression_quant_force, self.compression_type).astype(numpy.uint8)
 
-        gray_pixels_b = dct_data.astype(numpy.float32).tobytes()
-        size_img_uncompress = len(gray_pixels_b)
+        size_img_uncompress = len(restored.tobytes())
 
-        dct_data = numpy.frombuffer(gray_pixels_b, dtype=numpy.float32)
-        dct_data = dct_data.reshape(sizeX, sizeY)
-
-        blocks, _ = self.blockify(dct_data, 8)
-        logging.debug("unusing DCT method...")
-        for i in range(blocks.shape[0]):
-            for j in range(blocks.shape[1]):
-                blocks[i, j] = self.idct2(blocks[i, j])
-
-        restored = self.unblockify(blocks, [sizeX, sizeY], 8)
-
-        gray_pixels_b = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
-
-        logging.debug("compressing by quantization after DCT...")
-        if self.compression_quantization_force != 1:
-            if int(self.compression_type) == 1:
-                gray_pixels_b[gray_pixels_b != 0] = numpy.round(
-                    gray_pixels_b[
-                        gray_pixels_b != 0] / self.compression_quantization_force) * self.compression_quantization_force
-            elif int(self.compression_type) == 2:
-                gray_pixels_b[gray_pixels_b != 0] = numpy.ceil(
-                    gray_pixels_b[
-                        gray_pixels_b != 0] / self.compression_quantization_force) * self.compression_quantization_force
-            elif int(self.compression_type) == 0:
-                gray_pixels_b[gray_pixels_b != 0] = numpy.floor(
-                    gray_pixels_b[
-                        gray_pixels_b != 0] / self.compression_quantization_force) * self.compression_quantization_force
-
-
-        logging.debug("compressing by deflate...")
-
-        compressed = zlib.compress(gray_pixels_b)
+        # Deflate compression
+        compressed = zlib.compress(restored.tobytes())
         size_img = len(compressed)
 
-        img.write(ToBytes.to_bytes_int(size_img, 4))
-        img.write(compressed)
-
-        img.write(ToBytes.to_bytes_str("T"))
-        img.write(ToBytes.to_bytes_str("IMG"))
-        img.write(ToBytes.to_bytes_str("E"))
-
-        img.seek(0)
-        return img
+        # Write sizes and data
+        buf.write(struct.pack('>I', size_img))
+        buf.write(compressed)
+        buf.write(b"TIMAGE")
+        buf.seek(0)
+        return buf
 
     @staticmethod
-    def idct2(block):
+    def idct2(block: numpy.ndarray) -> numpy.ndarray:
+        if block.ndim != 2 or block.shape[0] != block.shape[1]:
+            raise ValueError(f"idct2 ожидает квадратный блок, получили shape={block.shape}")
         return idct(idct(block.T, norm='ortho').T, norm='ortho')
 
     @staticmethod
-    def unblockify(blocks, orig_shape, block_size=8):
+    def unblockify(blocks: numpy.ndarray,
+                   orig_shape: Tuple[int, int],
+                   block_size: int = 8) -> numpy.ndarray:
         logging.debug("unblocking array...")
         h, w = orig_shape
-        n_v, n_h, _, _ = blocks.shape
-        full = (blocks.swapaxes(1, 2)
-                .reshape(n_v * block_size, n_h * block_size))
+        n_v, n_h, b_h, b_w = blocks.shape
+
+        if b_h != block_size or b_w != block_size:
+            raise ValueError(f"Размер блоков {b_h}x{b_w} не соответствует block_size={block_size}")
+        full = (
+            blocks
+            .swapaxes(1, 2)
+            .reshape(n_v * block_size, n_h * block_size)
+        )
         return full[:h, :w]
 
-    #opens .gppic file and returns it like png image
-    @loading_screen
-    def open_image(self, img) -> Image.Image:
-        pixels = []
-        size = []
+    def open_image(self, file_obj: BinaryIO) -> Image.Image:
+        global gui
+        data = file_obj.read()
+        offset = 5  # пропускаем первые 5 байт
+        width = height = None
+        pixels = None
+
         logging.debug("reading image...")
-        img = img.read()
-        index = 5
 
-        while True:
-            now_elem = img[index:index + 1]
+        while offset < len(data):
+            chunk_type = data[offset:offset + 1]
+            offset += 1
 
-            if now_elem == b"O":
-                size = [struct.unpack('>I', img[index + 1:index + 5])[0],
-                        struct.unpack('>I', img[index + 5:index + 9])[0]]
-                index += 8
+            if chunk_type == b'O':
+                # читаем два uint32 BE
+                if offset + 8 > len(data):
+                    raise ValueError("Недостаточно данных для размера изображения")
+                width, height = struct.unpack('>II', data[offset:offset + 8])
+                offset += 8
 
-            if now_elem == b"A":
-                bytes_len = struct.unpack('>I', img[index + 1:index + 5])[0]  # gets len of bytes(pixels)
-                index += 5
+            elif chunk_type == b'A':
+                if width is None or height is None:
+                    raise ValueError("Размеры изображения не заданы перед данными пикселей")
+                if offset + 4 > len(data):
+                    raise ValueError("Недостаточно данных для длины сжатого блока")
+                (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
+                offset += 4
+                if offset + comp_len > len(data):
+                    raise ValueError("Недостаточно данных для сжатого блока")
+                comp_data = data[offset:offset + comp_len]
+                offset += comp_len
 
-                decompressed = zlib.decompress(img[index:index + bytes_len])  # decompressing pixels data by Deflate
-                img = img.replace(img[index:index + bytes_len],
-                                  decompressed)  # replasing compressed data to decompressed data
+                # декомпрессия
+                raw = zlib.decompress(comp_data)
+                expected = width * height
+                if len(raw) < expected:
+                    raise ValueError(f"Недостаточно пиксельных данных: ожидается {expected}, получено {len(raw)}")
 
-                pixels = numpy.zeros((size[1], size[0], 3), dtype=numpy.uint8)
+                # строим 2D-массив и дублируем в RGB
+                arr = numpy.frombuffer(raw[:expected], dtype=numpy.uint8).reshape((height, width))
+                pixels = numpy.stack([arr, arr, arr], axis=-1)
 
-                data = img[index + 1:index + 1 + size[0] * size[1]]
+            elif chunk_type == b"T":
+                title = data[offset:offset + 4]
+                offset += 4
+                root.title(title.decode('utf-8'))
 
-                pixels[:, :, 0] = numpy.frombuffer(data, dtype=numpy.uint8).reshape(size[1], size[0])
-
-                pixels[:, :, 1] = pixels[:, :, 0]
-                pixels[:, :, 2] = pixels[:, :, 0]
-                pixels[pixels > 255] = 255
-                pixels[pixels < 0] = 0
-
-                index += size[0] * size[1]
-
-            if now_elem == b"E":
+            elif chunk_type == b'E':
                 break
 
-            index += 1
+            else:
+                # пропуск неизвестного чанка: читаем длину и смещаем
+                if offset + 4 > len(data):
+                    raise ValueError(f"Некорректный чанк {chunk_type!r}: нет длины")
+                (length,) = struct.unpack('>I', data[offset:offset + 4])
+                offset += 4
+                logging.debug(f"Skipping unknown chunk {chunk_type!r} of length {length}")
+                offset += length
 
-        original_image = Image.fromarray(pixels)
-        return ImageOps.exif_transpose(original_image)
+        if pixels is None:
+            raise ValueError("Не найден блок пикселей (чанк 'A')")
 
+        img = Image.fromarray(pixels, mode='RGB')
+        return ImageOps.exif_transpose(img)
 
 
 #Class for encoding int/str to a byte object
@@ -306,7 +334,7 @@ class Gui:
         global root
 
         root = tk.Tk()
-        root.title("gppic conventer")
+        root.title("loading...")
         root.geometry("1000x800")
 
 
@@ -314,6 +342,11 @@ class Gui:
         btn_view = tk.Button(text="Update Image", command=self.On_triggers.on_button_view_update_image)
         btn_view.pack(anchor="nw")
         btn_view.place(x=15, y=15)
+
+    @staticmethod
+    def re_create_window() -> None:
+        root.destroy()
+        main()
 
 
     class Create_widgets:
@@ -354,7 +387,7 @@ class Gui:
                 compression_frame,
                 bg="#FFADB0",
                 bd=3,
-                from_=10,
+                from_=1,
                 to=255,
                 orient=tk.VERTICAL,
                 length=300,
@@ -432,7 +465,7 @@ class Gui:
             edit_compr_type_menu.add_radiobutton(label="Grayer", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=1)
             edit_compr_type_menu.add_radiobutton(label="Darker", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=0)
 
-            file_menu.add_command(label="New")
+            file_menu.add_command(label="New", command=Gui.re_create_window)
             file_menu.add_cascade(label="Export", menu=file_save_as_menu)
             file_menu.add_separator()
             file_menu.add_command(label="Exit", command=exit)
@@ -441,6 +474,7 @@ class Gui:
 
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
             debug_menu.add_command(label="show_image", command=self.Gui.Debug.show_image)
+            debug_menu.add_command(label="show_image_compress_off", command=self.Gui.Debug.show_image_virgin)
             debug_menu.add_command(label="show_original_image", command=self.Gui.Debug.show_original)
 
             menu.add_cascade(label="File", menu=file_menu)
@@ -491,7 +525,7 @@ class Gui:
             print()
             # re-creating image with new settings
             pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
-            file_image = work_with_gppic.convert_to_Gppic(pixel_matrix)
+            file_image = work_with_gppic.convert_to_gppic(pixel_matrix)
             file = work_with_gppic.open_image(file_image)
             image_label.destroy()
 
@@ -506,7 +540,7 @@ class Gui:
         @staticmethod
         def on_dct_slider_compression(value) -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_quantization_force, work_with_gppic.compression_type)
+            work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_quant_force, work_with_gppic.compression_type)
 
         # edits quantization CUMpression value in Work_with_gppic class
         @staticmethod
@@ -518,7 +552,7 @@ class Gui:
         @staticmethod
         def on_edit_compression_type() -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force, work_with_gppic.compression_quantization_force, edit_compr_type_menu_var.get())
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force, work_with_gppic.compression_quant_force, edit_compr_type_menu_var.get())
             logging.debug(f"Compression type has been edited for {edit_compr_type_menu_var.get()}")
 
 
@@ -530,19 +564,29 @@ class Gui:
         @staticmethod
         def get_image_data():
             dct_compression_forse_data  = work_with_gppic.compression_dct_force
-            quantization_compression_forse_data = work_with_gppic.compression_quantization_force
+            quantization_compression_forse_data = work_with_gppic.compression_quant_force
             compression_type_data = work_with_gppic.compression_type
 
             showinfo(title="get_image_data", message=f"dct_compression_forse : {dct_compression_forse_data}"
                                                      f"\nquantization_compression_forse_data : {quantization_compression_forse_data}"
                                                      f"\ncompression_type : {compression_type_data}\n"
-                                                     f"\nbytes size : {size_img}"
-                                                     f"\nuncompressed bytes size:  {size_img_uncompress}")
+                                                     f"\nnow bytes size : {size_img}"
+                                                     f"\nuncompressed (by DCT & quantization) bytes size:  {size_img_uncompress_DCT}"
+                                                     f"\nuncompressed (by Deflate) bytes size:  {size_img_uncompress}")
 
         @staticmethod
         def show_image():
             file_image.seek(0)
             img = work_with_gppic.open_image(file_image)
+            img.show()
+
+        @staticmethod
+        def show_image_virgin():
+            work_with_gppic_virgin = Work_with_gppic()
+            pixel_matrix_virgin = work_with_gppic_virgin.extract_pixels_from_png(path)
+            file_image_virgin = work_with_gppic_virgin.convert_to_gppic(pixel_matrix_virgin)
+            file_image_virgin.seek(0)
+            img = work_with_gppic_virgin.open_image(file_image_virgin)
             img.show()
 
         @staticmethod
@@ -602,10 +646,11 @@ def main():
     global path
     global file_image
 
-    work_with_gppic = Work_with_gppic(14, 1, 1) #default CUMpression force - 1, default CUMpression type = 1
-    gui = Gui()
 
+    gui = Gui()
     gui.create_window()
+
+    work_with_gppic = Work_with_gppic()
 
     path = gui.Get_windows.get_path([("Изображения", "*.png;*.jpg"), ("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")])
 
@@ -614,8 +659,7 @@ def main():
         exit()
 
     pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
-    file_image = work_with_gppic.convert_to_Gppic(pixel_matrix)
-
+    file_image = work_with_gppic.convert_to_gppic(pixel_matrix)
     gui.Create_widgets.create_main_widgets(work_with_gppic.open_image(file_image))
 
     logging.info("DONE")
