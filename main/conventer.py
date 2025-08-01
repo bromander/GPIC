@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 import functools
 from scipy.fftpack import dct, idct
 from typing import Optional, List, Tuple, BinaryIO
+import coloredlogs
+import sys
 
 
 # pigar generate - create requirements.txt
@@ -210,7 +212,7 @@ class Work_with_gppic:
     @staticmethod
     def idct2(block: numpy.ndarray) -> numpy.ndarray:
         if block.ndim != 2 or block.shape[0] != block.shape[1]:
-            raise ValueError(f"idct2 ожидает квадратный блок, получили shape={block.shape}")
+            raise ValueError(f"idct2 waiting square block, got {block.shape}")
         return idct(idct(block.T, norm='ortho').T, norm='ortho')
 
     @staticmethod
@@ -222,7 +224,7 @@ class Work_with_gppic:
         n_v, n_h, b_h, b_w = blocks.shape
 
         if b_h != block_size or b_w != block_size:
-            raise ValueError(f"Размер блоков {b_h}x{b_w} не соответствует block_size={block_size}")
+            raise ValueError(f"block size {b_h}x{b_w} not relevant {block_size}")
         full = (
             blocks
             .swapaxes(1, 2)
@@ -246,29 +248,27 @@ class Work_with_gppic:
             if chunk_type == b'O':
                 # читаем два uint32 BE
                 if offset + 8 > len(data):
-                    raise ValueError("Недостаточно данных для размера изображения")
+                    raise ValueError("Not enough data for the image size")
                 width, height = struct.unpack('>II', data[offset:offset + 8])
                 offset += 8
 
             elif chunk_type == b'A':
                 if width is None or height is None:
-                    raise ValueError("Размеры изображения не заданы перед данными пикселей")
+                    raise ValueError("The image dimensions are not set before the pixel data")
                 if offset + 4 > len(data):
-                    raise ValueError("Недостаточно данных для длины сжатого блока")
+                    raise ValueError("Insufficient data for the length of the compressed block")
                 (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
                 offset += 4
                 if offset + comp_len > len(data):
-                    raise ValueError("Недостаточно данных для сжатого блока")
+                    raise ValueError("Not enough data for a compressed block")
                 comp_data = data[offset:offset + comp_len]
                 offset += comp_len
 
-                # декомпрессия
                 raw = zlib.decompress(comp_data)
                 expected = width * height
                 if len(raw) < expected:
-                    raise ValueError(f"Недостаточно пиксельных данных: ожидается {expected}, получено {len(raw)}")
+                    raise ValueError(f"Insufficient pixel data: {expected} expected, {len(raw)} received")
 
-                # строим 2D-массив и дублируем в RGB
                 arr = numpy.frombuffer(raw[:expected], dtype=numpy.uint8).reshape((height, width))
                 pixels = numpy.stack([arr, arr, arr], axis=-1)
 
@@ -281,16 +281,15 @@ class Work_with_gppic:
                 break
 
             else:
-                # пропуск неизвестного чанка: читаем длину и смещаем
                 if offset + 4 > len(data):
-                    raise ValueError(f"Некорректный чанк {chunk_type!r}: нет длины")
+                    raise ValueError(f"Uncorrect chunk {chunk_type!r}: no length")
                 (length,) = struct.unpack('>I', data[offset:offset + 4])
                 offset += 4
                 logging.debug(f"Skipping unknown chunk {chunk_type!r} of length {length}")
                 offset += length
 
         if pixels is None:
-            raise ValueError("Не найден блок пикселей (чанк 'A')")
+            raise ValueError("Pixel block not found (chunk 'A')")
 
         img = Image.fromarray(pixels, mode='RGB')
         return ImageOps.exif_transpose(img)
@@ -652,7 +651,7 @@ def main():
 
     work_with_gppic = Work_with_gppic()
 
-    path = gui.Get_windows.get_path([("Изображения", "*.png;*.jpg"), ("Текстовые файлы", "*.txt"), ("Все файлы", "*.*")])
+    path = gui.Get_windows.get_path([("Images", "*.png;*.jpg"), ("Txt files", "*.txt"), ("All files", "*.*")])
 
 
     if path == "":
@@ -667,5 +666,12 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(format='%(asctime)s : %(funcName)s : %(levelname)s : %(message)s', level=logging.DEBUG)
+    coloredlogs.DEFAULT_FIELD_STYLES = {'asctime': {'color': 'green'}, 'levelname': {'color': 'green'},
+                                        'name': {'color': 'blue'}}
+    coloredlogs.DEFAULT_LEVEL_STYLES = {'critical': {'bold': True, 'color': 'red'}, 'debug': {'color': 'white'},
+                                        'error': {'color': 'red'}, 'info': {'color': 'white'},
+                                        'notice': {'color': 'magenta'}, 'spam': {'color': 'green', 'faint': True},
+                                        'success': {'bold': True, 'color': 'green'}, 'verbose': {'color': 'blue'},
+                                        'warning': {'color': 'yellow'}}
+    coloredlogs.install(level=logging.INFO, stream=sys.stdout, format='%(asctime)s : %(levelname)s : %(message)s')
     main()
