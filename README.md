@@ -26,5 +26,5 @@ Converting a .png (for example) to .gpic can be broken down into seven steps:
 6. Reconstruct the pixel matrix by applying the inverse [Discrete Cosine Transform](https://en.wikipedia.org/wiki/Discrete_cosine_transform) (DCT) to each block
 7. Apply [quantization](https://en.wikipedia.org/wiki/Quantization_(image_processing)) again to each reconstructed block
 
-#### GPIC Library
+## GPIC Library
 Active development is underway of a library to work with the GPIC file format
