@@ -1,7 +1,7 @@
 <div align="center">
   <h1>GPIC Converter</h1>
 
-  ![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)
+  [![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)](https://github.com/bromander/GPIC/blob/master/LICENSE)
 </div>
 
 ## Getting Started
