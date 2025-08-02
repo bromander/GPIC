@@ -1,9 +1,10 @@
 <div align="center">
   <h1>GPIC Converter</h1>
+
+  ![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)
 </div>
 
 ## Getting Started
-
 #### Releases Page
 
 You can download the latest and most up-to-date .exe version from the [Releases page](https://github.com/bromander/GPIC/releases/tag/release)
