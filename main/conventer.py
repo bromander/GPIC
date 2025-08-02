@@ -1,3 +1,5 @@
+import time
+
 from PIL import Image, ImageTk, ImageOps
 import numpy
 from tkinter import filedialog
@@ -7,6 +9,7 @@ from tkinter.messagebox import showerror, showwarning, showinfo
 import zlib
 import io
 import logging
+from logging.handlers import MemoryHandler
 import struct
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -14,8 +17,9 @@ import functools
 from scipy.fftpack import dct, idct
 from typing import Optional, List, Tuple, BinaryIO
 import coloredlogs
+import ctypes
 import sys
-
+import traceback
 
 # pigar generate - create requirements.txt
 
@@ -66,16 +70,32 @@ def loading_screen(func):
 
     return wrapper
 
+def catch_errors(func):
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            tb = traceback.extract_tb(sys.exc_info()[2])  # Получаем стек вызовов
+            last_call = tb[-1]
+            showerror(type(e).__name__, f'{type(e).__name__} on line {last_call.lineno}: {e}')
+            return None
+
+
+    return wrapper
+
 
 #Class for working with gppic/other images files
 class Work_with_gppic:
 
-    def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 0):
+    def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 2, dct_blocksize: int = 8):
         self.compression_dct_force = compression_dct_force
         self.compression_quant_force = compression_quant_force
         self.compression_type = compression_type  # 0=floor,1=round,2=ceil
+        self.array_data_type = array_data_type
+        self.dct_blocksize = dct_blocksize
 
     @staticmethod
+    @catch_errors
     def extract_pixels_from_png(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
         if path is None:
             raise ValueError("'path' not found")
@@ -83,19 +103,19 @@ class Work_with_gppic:
             with Image.open(path) as img:
                 img = img.convert("RGB")
                 width, height = img.size
-                logging.info(f"Picture size: {width}×{height}")
+                logger.info(f"Picture size: {width}×{height}")
 
-                logging.debug("Getting pixel data…")
+                logger.debug("Getting pixel data…")
                 pixels = list(img.getdata())
 
-                logging.debug("Loading pixel matrix…")
+                logger.debug("Loading pixel matrix…")
                 pixel_matrix: List[List[Tuple[int, int, int]]] = [
                     pixels[i * width:(i + 1) * width]
                     for i in range(height)
                 ]
                 return pixel_matrix
         except FileNotFoundError:
-            logging.error(f"File not found: {path}")
+            logger.error(f"File not found: {path}")
             return None
 
     #returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
@@ -119,8 +139,7 @@ class Work_with_gppic:
                   .swapaxes(1, 2))
         return blocks, (h, w)
 
-    @staticmethod
-    def _unblockify(blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8) -> numpy.ndarray:
+    def _unblockify(self, blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8):
         n_v, n_h, _, _ = blocks.shape
         padded = blocks.swapaxes(1, 2).reshape(n_v * block_size, n_h * block_size)
         h, w = orig_shape
@@ -129,22 +148,31 @@ class Work_with_gppic:
     @staticmethod
     def _quantize(data: numpy.ndarray, force: int, method: int) -> numpy.ndarray:
         if force != 1:
-            if int(method) == 1:
-                data[data != 0] = numpy.round(
-                    data[
-                        data != 0] / force) * force
-            elif int(method) == 2:
-                data[data != 0] = numpy.ceil(
-                    data[
-                        data != 0] / force) * force
-            elif int(method) == 0:
-                data[data != 0] = numpy.floor(
-                    data[
-                        data != 0] / force) * force
+            mask = data != 0
+            if method == 1:
+                data[mask] = numpy.round(data[mask] / force) * force
+            elif method == 2:
+                data[mask] = numpy.ceil(data[mask] / force) * force
+            elif method == 0:
+                data[mask] = numpy.floor(data[mask] / force) * force
         return data
+
+    def _dtype(self):
+        if self.array_data_type == 0:
+            return numpy.int8
+        elif self.array_data_type == 1:
+            return numpy.int16
+        elif self.array_data_type == 2:
+            return numpy.int32
+        elif self.array_data_type == 3:
+            return numpy.float16
+        elif self.array_data_type == 4:
+            return numpy.float32
+
 
     #converts list with png pixels to .gppic file in ram
     @loading_screen
+    @catch_errors
     def convert_to_gppic(self, pixel_matrix: list) -> io.BytesIO:
         global size_img, size_img_uncompress, size_img_uncompress_DCT
         # Validate parameters
@@ -165,40 +193,44 @@ class Work_with_gppic:
         buf.write(struct.pack('>I', height))
         buf.write(b"A")
 
-        # Convert to grayscale
-        pixels = numpy.array(pixel_matrix, dtype=numpy.float32)
+        logger.debug("Using greyscale...")
+        logger.debug(f"Array type: {self._dtype()}")
+        pixels = numpy.array(pixel_matrix, dtype=self._dtype())
         gray = (0.299 * pixels[..., 0] +
                 0.587 * pixels[..., 1] +
-                0.114 * pixels[..., 2]).astype(numpy.float32)
+                0.114 * pixels[..., 2]).astype(self._dtype())
 
         size_img_uncompress_DCT = gray.nbytes
 
-        # DCT compression
-        blocks, orig = self._blockify(gray)
+        logger.debug("Using DCT cumPression...")
+        logger.debug(f"DCT block size: {self.dct_blocksize}")
+        blocks, orig = self._blockify(gray, block_size=self.dct_blocksize)
         for i in range(blocks.shape[0]):
             for j in range(blocks.shape[1]):
                 blocks[i, j] = self._dct2(blocks[i, j])
-        dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * 8, blocks.shape[1] * 8)
+        dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
         dct_mat = dct_mat[:orig[0], :orig[1]]
         dct_mat = self._quantize(dct_mat, self.compression_dct_force, self.compression_type)
 
-        raw = dct_mat.astype(numpy.float32).tobytes()
+        raw = dct_mat.astype(self._dtype()).tobytes()
 
-        # Inverse DCT reconstruction
-        inv = numpy.frombuffer(raw, dtype=numpy.float32).reshape(orig[0], orig[1])
-        blocks2, _ = self._blockify(inv)
+        logger.debug("Reconstructing DCT cumPression...")
+        inv = numpy.frombuffer(raw, dtype=self._dtype()).reshape(orig[0], orig[1])
+        blocks2, _ = self._blockify(inv, block_size=self.dct_blocksize)
         for i in range(blocks2.shape[0]):
             for j in range(blocks2.shape[1]):
                 blocks2[i, j] = self._idct2(blocks2[i, j])
-        restored = self._unblockify(blocks2, orig)
+        restored = self._unblockify(blocks2, orig, block_size=self.dct_blocksize)
         restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
 
-        # Quantization post-inverse
+        logger.debug("Using Quantization...")
+        logger.debug(f"quantization force: {self.compression_quant_force}")
+        logger.debug(f"quantization type: {self.compression_type}")
         restored = self._quantize(restored, self.compression_quant_force, self.compression_type).astype(numpy.uint8)
 
         size_img_uncompress = len(restored.tobytes())
 
-        # Deflate compression
+        logger.debug("Using Deflate compression...")
         compressed = zlib.compress(restored.tobytes())
         size_img = len(compressed)
 
@@ -219,7 +251,7 @@ class Work_with_gppic:
     def unblockify(blocks: numpy.ndarray,
                    orig_shape: Tuple[int, int],
                    block_size: int = 8) -> numpy.ndarray:
-        logging.debug("unblocking array...")
+        logger.debug("unblocking array...")
         h, w = orig_shape
         n_v, n_h, b_h, b_w = blocks.shape
 
@@ -232,6 +264,7 @@ class Work_with_gppic:
         )
         return full[:h, :w]
 
+    @catch_errors
     def open_image(self, file_obj: BinaryIO) -> Image.Image:
         global gui
         data = file_obj.read()
@@ -239,7 +272,7 @@ class Work_with_gppic:
         width = height = None
         pixels = None
 
-        logging.debug("reading image...")
+        logger.debug("reading image...")
 
         while offset < len(data):
             chunk_type = data[offset:offset + 1]
@@ -276,6 +309,7 @@ class Work_with_gppic:
                 title = data[offset:offset + 4]
                 offset += 4
                 root.title(title.decode('utf-8'))
+                logger.debug(f"Image type: {title.decode('utf-8')}")
 
             elif chunk_type == b'E':
                 break
@@ -285,7 +319,7 @@ class Work_with_gppic:
                     raise ValueError(f"Uncorrect chunk {chunk_type!r}: no length")
                 (length,) = struct.unpack('>I', data[offset:offset + 4])
                 offset += 4
-                logging.debug(f"Skipping unknown chunk {chunk_type!r} of length {length}")
+                logger.warning(f"Skipping unknown chunk {chunk_type!r} of length {length}")
                 offset += length
 
         if pixels is None:
@@ -355,6 +389,7 @@ class Gui:
 
         def create_main_widgets(self, image):
             self.create_menu()
+            self.create_version_label()
             self.create_image_viewer(image)
             self.create_dct_compression_slider()
             self.create_quantization_compression_slider()
@@ -433,7 +468,7 @@ class Gui:
             #creating frame of preview window
             image_viewer_frame = tk.Frame(root, bg="white", bd=5, relief=tk.GROOVE)
             image_viewer_frame.pack(anchor="center", pady=100)
-            image_viewer_frame.configure(width=550, height=550)
+            image_viewer_frame.configure(width=530, height=530)
             image_viewer_frame.pack_propagate(False)
 
             image.thumbnail((550, 550), Image.Resampling.LANCZOS)
@@ -445,8 +480,12 @@ class Gui:
             image_label.image = image_
             image_label.pack(anchor="center", ipady=200)
 
+        def create_version_label(self):
+            version_label = tk.Label(root, text="GPIC Conventer V1.0 ", font=("Arial", 10))
+            version_label.pack(anchor="se")
+
         def create_menu(self) -> None:
-            global edit_compr_type_menu_var
+            global edit_compr_type_menu_var, edit_array_data_type_var, edit_dct_block_size_var, show_console_var
             menu = tk.Menu(root)
             root.option_add("*tearOff", tk.FALSE)
 
@@ -454,27 +493,48 @@ class Gui:
             file_save_as_menu = tk.Menu()
             edit_menu = tk.Menu()
             debug_menu = tk.Menu()
+            edit_array_data_type = tk.Menu()
             edit_compr_type_menu = tk.Menu()
+            edit_dct_block_size = tk.Menu()
 
             file_save_as_menu.add_command(label="Export as .GPPIC", command=lambda: self.Gui.export_file(file_image))
             file_save_as_menu.add_command(label="Export as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
 
             edit_compr_type_menu_var = tk.IntVar(value=1)
-            edit_compr_type_menu.add_radiobutton(label="Lighter", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=2)
-            edit_compr_type_menu.add_radiobutton(label="Grayer", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=1)
-            edit_compr_type_menu.add_radiobutton(label="Darker", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=0)
+            edit_compr_type_menu.add_radiobutton(label="round ceil", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=2)
+            edit_compr_type_menu.add_radiobutton(label="round Default", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=1)
+            edit_compr_type_menu.add_radiobutton(label="round floor", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=0)
 
             file_menu.add_command(label="New", command=Gui.re_create_window)
             file_menu.add_cascade(label="Export", menu=file_save_as_menu)
             file_menu.add_separator()
-            file_menu.add_command(label="Exit", command=exit)
+            file_menu.add_command(label="Exit", command=sys.exit)
 
             edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
+            edit_menu.add_cascade(label="Array data type", menu=edit_array_data_type)
+            edit_menu.add_cascade(label="DCT block size", menu=edit_dct_block_size)
 
+            show_console_var = tk.BooleanVar()
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
-            debug_menu.add_command(label="show_image", command=self.Gui.Debug.show_image)
+            debug_menu.add_command(label="show_image_now", command=self.Gui.Debug.show_image)
             debug_menu.add_command(label="show_image_compress_off", command=self.Gui.Debug.show_image_virgin)
             debug_menu.add_command(label="show_original_image", command=self.Gui.Debug.show_original)
+            debug_menu.add_checkbutton(label="export_logs", command=lambda: self.Gui.Debug.export_logs())
+
+            edit_array_data_type_var = tk.IntVar(value=2)
+            edit_array_data_type.add_radiobutton(label="int8", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=0)
+            edit_array_data_type.add_radiobutton(label="int16", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=1)
+            edit_array_data_type.add_radiobutton(label="int32", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=2)
+            edit_array_data_type.add_separator()
+            edit_array_data_type.add_radiobutton(label="float16", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=3)
+            edit_array_data_type.add_radiobutton(label="float32", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=4)
+
+            edit_dct_block_size_var = tk.IntVar(value=8)
+            edit_dct_block_size.add_radiobutton(label="2", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=2)
+            edit_dct_block_size.add_radiobutton(label="4", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=4)
+            edit_dct_block_size.add_radiobutton(label="8", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=8)
+            edit_dct_block_size.add_radiobutton(label="16", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=16)
+
 
             menu.add_cascade(label="File", menu=file_menu)
             menu.add_cascade(label="Edit", menu=edit_menu)
@@ -539,20 +599,62 @@ class Gui:
         @staticmethod
         def on_dct_slider_compression(value) -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(int(value), work_with_gppic.compression_quant_force, work_with_gppic.compression_type)
+            work_with_gppic = Work_with_gppic(int(value),
+                                              work_with_gppic.compression_quant_force,
+                                              work_with_gppic.compression_type,
+                                              work_with_gppic.array_data_type,
+                                              work_with_gppic.dct_blocksize
+                                              )
 
         # edits quantization CUMpression value in Work_with_gppic class
         @staticmethod
         def on_quantization_slider_compression(value) -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force, int(value), work_with_gppic.compression_type)
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force,
+                                              int(value), work_with_gppic.compression_type,
+                                              work_with_gppic.array_data_type,
+                                              work_with_gppic.dct_blocksize
+                                              )
 
 
         @staticmethod
         def on_edit_compression_type() -> None:
             global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force, work_with_gppic.compression_quant_force, edit_compr_type_menu_var.get())
-            logging.debug(f"Compression type has been edited for {edit_compr_type_menu_var.get()}")
+            work_with_gppic = Work_with_gppic(
+                work_with_gppic.compression_dct_force,
+                work_with_gppic.compression_quant_force,
+                edit_compr_type_menu_var.get(),
+                work_with_gppic.array_data_type,
+                work_with_gppic.dct_blocksize
+
+            )
+            logger.debug(f"Compression type has been edited to {edit_compr_type_menu_var.get()}")
+
+        @staticmethod
+        def on_edit_array_data_type() -> None:
+            global work_with_gppic
+            work_with_gppic = Work_with_gppic(
+                work_with_gppic.compression_dct_force,
+                work_with_gppic.compression_quant_force,
+                work_with_gppic.compression_type,
+                edit_array_data_type_var.get(),
+                work_with_gppic.dct_blocksize
+
+            )
+            logger.debug(f"Array data type has been edited to {edit_array_data_type_var.get()}")
+
+        @staticmethod
+        def on_edit_dct_block_size() -> None:
+            global work_with_gppic
+            work_with_gppic = Work_with_gppic(
+                work_with_gppic.compression_dct_force,
+                work_with_gppic.compression_quant_force,
+                work_with_gppic.compression_type,
+                work_with_gppic.array_data_type,
+                edit_dct_block_size_var.get()
+
+            )
+            logger.debug(f"DCT block size has been edited to {edit_dct_block_size_var.get()}")
 
 
     class Debug:
@@ -562,16 +664,23 @@ class Gui:
 
         @staticmethod
         def get_image_data():
+            array_data_types = ["int8", "int16", "int32", "float16", "float32"]
+
             dct_compression_forse_data  = work_with_gppic.compression_dct_force
             quantization_compression_forse_data = work_with_gppic.compression_quant_force
             compression_type_data = work_with_gppic.compression_type
+            array_data_type = work_with_gppic.array_data_type
+
+            dct_blocksize = work_with_gppic.dct_blocksize
 
             showinfo(title="get_image_data", message=f"dct_compression_forse : {dct_compression_forse_data}"
                                                      f"\nquantization_compression_forse_data : {quantization_compression_forse_data}"
-                                                     f"\ncompression_type : {compression_type_data}\n"
-                                                     f"\nnow bytes size : {size_img}"
-                                                     f"\nuncompressed (by DCT & quantization) bytes size:  {size_img_uncompress_DCT}"
-                                                     f"\nuncompressed (by Deflate) bytes size:  {size_img_uncompress}")
+                                                     f"\ncompression_type : {compression_type_data}"
+                                                     f"\narray_data_type : {array_data_types[array_data_type]} ({array_data_type})"
+                                                     f"\ndct_blocksize : {dct_blocksize}"
+                                                     f"\n\nuncompressed (by DCT & quantization) bytes size:  {size_img_uncompress_DCT}"
+                                                     f"\nuncompressed (by Deflate) bytes size:  {size_img_uncompress}"f""
+                                                     f"\nnow bytes size : {size_img}")
 
         @staticmethod
         def show_image():
@@ -592,6 +701,19 @@ class Gui:
         def show_original():
             os.startfile(path)
 
+        @staticmethod
+        def export_logs():
+            def export_logger():
+                buffer_handler.flush()
+                log_buffer.seek(0)
+                return log_buffer.read()
+
+            now_time = time.ctime(time.time()).replace(" ", "_").replace(":", ".")
+            with open(f"./{now_time}.log", "w", encoding="UTF-8") as log:
+                log.write(export_logger())
+
+            showinfo("GPIC", f"logs were successfully exported at path: {os.path.abspath(f"{now_time}.log")}")
+
 
 
 
@@ -607,7 +729,7 @@ class Gui:
             img.save(export_path, format="PNG")
 
 
-            logging.info("image has been exported as PNG!")
+            logger.info("image has been exported as PNG!")
 
 
     #exports image in .gppic format
@@ -620,7 +742,7 @@ class Gui:
                 f.write(img.getvalue())
 
 
-            logging.info("file has been successfully exported!")
+            logger.info("file has been successfully exported!")
 
 
     #gets bytes and returns them in a beautiful wrapper for user
@@ -640,11 +762,48 @@ class Gui:
 
 
 #starts program
+@catch_errors
 def main():
     global work_with_gppic
     global path
     global file_image
+    global buffer_handler, log_buffer
 
+    def create_logger():
+        coloredlogs.DEFAULT_FIELD_STYLES = {
+            'asctime': {'color': 'green'},
+            'levelname': {'color': 'green'},
+            'name': {'color': 'blue'}
+        }
+
+        coloredlogs.DEFAULT_LEVEL_STYLES = {
+            'critical': {'bold': True, 'color': 'red'},
+            'debug': {'color': 'white'},
+            'error': {'color': 'red'},
+            'info': {'color': 'white'},
+            'notice': {'color': 'magenta'},
+            'spam': {'color': 'green', 'faint': True},
+            'success': {'bold': True, 'color': 'green'},
+            'verbose': {'color': 'blue'},
+            'warning': {'color': 'yellow'}
+        }
+
+        coloredlogs.install(
+            level=logging.DEBUG,
+            logger=logger,
+            fmt='%(asctime)s : %(levelname)s : %(message)s'
+        )
+
+        log_buffer = io.StringIO()
+        buffer_handler = logging.StreamHandler(log_buffer)
+        buffer_handler.setLevel(logging.DEBUG)
+        formatter = logging.Formatter('%(asctime)s : %(levelname)s : %(message)s')
+        buffer_handler.setFormatter(formatter)
+        logger.addHandler(buffer_handler)
+
+        return buffer_handler, log_buffer
+
+    buffer_handler, log_buffer = create_logger()
 
     gui = Gui()
     gui.create_window()
@@ -655,23 +814,18 @@ def main():
 
 
     if path == "":
-        exit()
+        sys.exit()
 
     pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
     file_image = work_with_gppic.convert_to_gppic(pixel_matrix)
     gui.Create_widgets.create_main_widgets(work_with_gppic.open_image(file_image))
 
-    logging.info("DONE")
+    logger.info("DONE")
     root.mainloop()
 
 
 if __name__ == "__main__":
-    coloredlogs.DEFAULT_FIELD_STYLES = {'asctime': {'color': 'green'}, 'levelname': {'color': 'green'},
-                                        'name': {'color': 'blue'}}
-    coloredlogs.DEFAULT_LEVEL_STYLES = {'critical': {'bold': True, 'color': 'red'}, 'debug': {'color': 'white'},
-                                        'error': {'color': 'red'}, 'info': {'color': 'white'},
-                                        'notice': {'color': 'magenta'}, 'spam': {'color': 'green', 'faint': True},
-                                        'success': {'bold': True, 'color': 'green'}, 'verbose': {'color': 'blue'},
-                                        'warning': {'color': 'yellow'}}
-    coloredlogs.install(level=logging.INFO, stream=sys.stdout, format='%(asctime)s : %(levelname)s : %(message)s')
+    logger = logging.getLogger("Logger")
+    logger.setLevel(logging.DEBUG)
+
     main()
