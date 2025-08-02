@@ -4,6 +4,7 @@
   [![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)](https://github.com/bromander/GPIC/blob/master/LICENSE)
 </div>
 
+
 ## Getting Started
 #### Releases Page
 
@@ -28,3 +29,5 @@ Converting a .png (for example) to .gpic can be broken down into seven steps:
 
 ## GPIC Library
 Active development is underway of a library to work with the GPIC file format
+
+<img width="165" height="298" alt="GPIC_logo" src="https://github.com/user-attachments/assets/5e58c174-ab11-4d81-baaa-660e4d318749" /> <img width="165" height="298" alt="GPIC_logo" src="https://github.com/user-attachments/assets/5e58c174-ab11-4d81-baaa-660e4d318749" /> <img width="165" height="298" alt="GPIC_logo" src="https://github.com/user-attachments/assets/5e58c174-ab11-4d81-baaa-660e4d318749" /> <img width="165" height="298" alt="GPIC_logo" src="https://github.com/user-attachments/assets/5e58c174-ab11-4d81-baaa-660e4d318749" /> <img width="165" height="298" alt="GPIC_logo" src="https://github.com/user-attachments/assets/5e58c174-ab11-4d81-baaa-660e4d318749" /> <img width="165" height="298" alt="GPIC_logo" src="https://github.com/user-attachments/assets/5e58c174-ab11-4d81-baaa-660e4d318749" />
