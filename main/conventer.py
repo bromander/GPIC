@@ -9,7 +9,6 @@ from tkinter.messagebox import showerror, showwarning, showinfo
 import zlib
 import io
 import logging
-from logging.handlers import MemoryHandler
 import struct
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -17,11 +16,13 @@ import functools
 from scipy.fftpack import dct, idct
 from typing import Optional, List, Tuple, BinaryIO
 import coloredlogs
-import ctypes
 import sys
 import traceback
 
+VERSION = "1.1"
+
 # pigar generate - create requirements.txt
+# pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole conventer.py
 
 #handler that creates small loading window
 def loading_screen(func):
@@ -33,6 +34,7 @@ def loading_screen(func):
             pass
 
         loading_win = tk.Toplevel(root)
+        loading_win.iconbitmap(resource_path("GPIC_logo.ico"))
         loading_win.title("Loading...")
         loading_win.transient(root)
         loading_win.grab_set() #blocks user interaction with other windows of the program
@@ -83,6 +85,9 @@ def catch_errors(func):
 
     return wrapper
 
+def resource_path(relative_path):
+    base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
+    return os.path.join(base_path, relative_path)
 
 #Class for working with gppic/other images files
 class Work_with_gppic:
@@ -367,6 +372,7 @@ class Gui:
         global root
 
         root = tk.Tk()
+        root.iconbitmap(resource_path("GPIC_logo.ico"))
         root.title("loading...")
         root.geometry("1000x800")
 
@@ -481,7 +487,7 @@ class Gui:
             image_label.pack(anchor="center", ipady=200)
 
         def create_version_label(self):
-            version_label = tk.Label(root, text="GPIC Conventer V1.0 ", font=("Arial", 10))
+            version_label = tk.Label(root, text=f"GPIC Conventer V{VERSION} ", font=("Arial", 10))
             version_label.pack(anchor="se")
 
         def create_menu(self) -> None:
@@ -497,7 +503,7 @@ class Gui:
             edit_compr_type_menu = tk.Menu()
             edit_dct_block_size = tk.Menu()
 
-            file_save_as_menu.add_command(label="Export as .GPPIC", command=lambda: self.Gui.export_file(file_image))
+            file_save_as_menu.add_command(label="Export as .GPIC", command=lambda: self.Gui.export_file(file_image))
             file_save_as_menu.add_command(label="Export as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
 
             edit_compr_type_menu_var = tk.IntVar(value=1)
@@ -734,7 +740,7 @@ class Gui:
 
     #exports image in .gppic format
     def export_file(self, img) -> None:
-        export_path = self.Get_windows.get_folder([("gppic", "*.gppic"), ("All files", "*.*")], ".gppic")
+        export_path = self.Get_windows.get_folder([("gpic", "*.gpic"), ("All files", "*.*")], ".gppic")
         if export_path == "":
             pass
         else:
