@@ -224,16 +224,16 @@ class Work_with_gppic:
         dct_mat = dct_mat[:orig[0], :orig[1]]
         dct_mat = self._quantize(dct_mat, self.compression_dct_force, self.compression_type)
 
-        raw = dct_mat.astype(self._dtype()).tobytes()
+        raw = dct_mat.astype(numpy.int32).tobytes()
 
         logger.debug("Reconstructing DCT cumPression...")
-        inv = numpy.frombuffer(raw, dtype=self._dtype()).reshape(orig[0], orig[1])
+        inv = numpy.frombuffer(raw, dtype=numpy.int32).reshape(orig[0], orig[1])
         blocks2, _ = self._blockify(inv, block_size=self.dct_blocksize)
         for i in range(blocks2.shape[0]):
             for j in range(blocks2.shape[1]):
                 blocks2[i, j] = self._idct2(blocks2[i, j])
         restored = self._unblockify(blocks2, orig, block_size=self.dct_blocksize)
-        restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+        restored = numpy.clip(numpy.rint(restored), 0, 255).astype(self._dtype())
 
         logger.debug("Using Quantization...")
         logger.debug(f"quantization force: {self.compression_quant_force}")
