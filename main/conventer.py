@@ -156,6 +156,16 @@ class Work_with_gppic:
                 data[mask] = numpy.floor(data[mask] / force) * force
         return data
 
+    @staticmethod
+    def _down(data: numpy.ndarray):
+        mask = data != 0
+        if min(data[mask]) > 0:
+            if min(data[mask]) > 5:
+                data[mask] -= 5
+            else:
+                data[mask] -= min(data[mask])
+        return data
+
     def _dtype(self):
         if self.array_data_type == 0:
             return numpy.int8
@@ -197,7 +207,10 @@ class Work_with_gppic:
         pixels = numpy.array(pixel_matrix, dtype=self._dtype())
         gray = (0.299 * pixels[..., 0] +
                 0.587 * pixels[..., 1] +
-                0.114 * pixels[..., 2]).astype(self._dtype())
+                0.114 * pixels[..., 2]).astype(numpy.int32)
+
+
+        gray = self._down(gray)
 
         size_img_uncompress_DCT = gray.nbytes
 
@@ -225,7 +238,9 @@ class Work_with_gppic:
         logger.debug("Using Quantization...")
         logger.debug(f"quantization force: {self.compression_quant_force}")
         logger.debug(f"quantization type: {self.compression_type}")
-        restored = self._quantize(restored, self.compression_quant_force, self.compression_type).astype(numpy.uint8)
+        restored = self._quantize(restored, self.compression_quant_force, self.compression_type).astype(self._dtype())
+
+        restored = self._down(restored)
 
         size_img_uncompress = len(restored.tobytes())
 
