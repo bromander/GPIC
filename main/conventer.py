@@ -18,6 +18,7 @@ from typing import Optional, List, Tuple, BinaryIO
 import coloredlogs
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 VERSION = "1.1"
 
