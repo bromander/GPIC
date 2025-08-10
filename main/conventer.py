@@ -29,32 +29,23 @@ VERSION = "1.1"
 def loading_screen(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-
-        #if user tries to close loading window instead of close will be called this function
-        def disable_close():
-            pass
+        def disable_close(): pass
 
         loading_win = tk.Toplevel(root)
         loading_win.iconbitmap(resource_path("GPIC_logo.ico"))
         loading_win.title("Loading...")
         loading_win.transient(root)
-        loading_win.grab_set() #blocks user interaction with other windows of the program
-        loading_win.protocol("WM_DELETE_WINDOW", disable_close) #if user tries to close loading window instead of close will be called this function
+        loading_win.grab_set()
+        loading_win.protocol("WM_DELETE_WINDOW", disable_close)
 
-        loading_win.update_idletasks()
+        # Центрируем окно
+        loading_win.geometry("200x100+{}+{}".format(
+            (loading_win.winfo_screenwidth() - 200) // 2,
+            (loading_win.winfo_screenheight() - 100) // 2
+        ))
 
-        w = loading_win.winfo_reqwidth() #gets loading window width
-        h = loading_win.winfo_reqheight() #gets loading window height
-        sw = loading_win.winfo_screenwidth() #gets screen width
-        sh = loading_win.winfo_screenheight() #gets screen height
-        x = (sw - w) // 2 #getting x and y centers
-        y = (sh - h) // 2
-        loading_win.geometry(f"{200}x{100}+{x}+{y}") #plasing window on screen
-
-        #setting window data:
-        label_loading = tk.Label(loading_win, text="Loading...")
-        label_loading.pack(anchor="n", pady=10)
-        pb = ttk.Progressbar(loading_win, mode="indeterminate") #mode "determinate" - progress just go to left/right. Mode "indeterminate" - progress will do ping - pong XD
+        tk.Label(loading_win, text="Loading...").pack(anchor="n", pady=10)
+        pb = ttk.Progressbar(loading_win, mode="indeterminate")
         pb.pack(expand=True, fill="x", padx=20, pady=20)
         pb.start(2) #makes the progressbar always move
 
@@ -63,9 +54,9 @@ def loading_screen(func):
 
             def check():
                 if future.done():
-                    loading_win.destroy() #destoys loading window after compliting the function
+                    loading_win.destroy()
                 else:
-                    loading_win.after(50, check) #checks every 20ms "Is function complete?" (I think it is a little bit not optimized at all but the main thing is that it works)
+                    loading_win.after(50, check)
 
             loading_win.after(50, check)
             root.wait_window(loading_win)
