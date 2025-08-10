@@ -85,7 +85,7 @@ def resource_path(relative_path):
 #Class for working with gppic/other images files
 class Work_with_gppic:
 
-    def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 2, dct_blocksize: int = 8):
+    def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 0, dct_blocksize: int = 8):
         self.compression_dct_force = compression_dct_force
         self.compression_quant_force = compression_quant_force
         self.compression_type = compression_type  # 0=floor,1=round,2=ceil
@@ -168,7 +168,7 @@ class Work_with_gppic:
 
     def _dtype(self):
         if self.array_data_type == 0:
-            return numpy.int8
+            return numpy.uint8
         elif self.array_data_type == 1:
             return numpy.int16
         elif self.array_data_type == 2:
@@ -529,15 +529,15 @@ class Gui:
             edit_menu.add_cascade(label="Array data type", menu=edit_array_data_type)
             edit_menu.add_cascade(label="DCT block size", menu=edit_dct_block_size)
 
-            show_console_var = tk.BooleanVar()
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
             debug_menu.add_command(label="show_image_now", command=self.Gui.Debug.show_image)
             debug_menu.add_command(label="show_image_compress_off", command=self.Gui.Debug.show_image_virgin)
             debug_menu.add_command(label="show_original_image", command=self.Gui.Debug.show_original)
             debug_menu.add_checkbutton(label="export_logs", command=lambda: self.Gui.Debug.export_logs())
 
-            edit_array_data_type_var = tk.IntVar(value=2)
-            edit_array_data_type.add_radiobutton(label="int8", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=0)
+            edit_array_data_type_var = tk.IntVar(value=0)
+            edit_array_data_type.add_radiobutton(label="uint8", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=0)
+            edit_array_data_type.add_separator()
             edit_array_data_type.add_radiobutton(label="int16", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=1)
             edit_array_data_type.add_radiobutton(label="int32", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=2)
             edit_array_data_type.add_separator()
