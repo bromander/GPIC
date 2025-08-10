@@ -94,6 +94,7 @@ class Work_with_gppic:
 
     @staticmethod
     @catch_errors
+    # returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     def extract_pixels_from_png(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
         if path is None:
             raise ValueError("'path' not found")
@@ -116,7 +117,6 @@ class Work_with_gppic:
             logger.error(f"File not found: {path}")
             return None
 
-    #returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     @staticmethod
     def _dct2(block: numpy.ndarray) -> numpy.ndarray:
         return dct(dct(block.T, norm='ortho').T, norm='ortho')
