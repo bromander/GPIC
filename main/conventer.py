@@ -20,7 +20,7 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole conventer.py
