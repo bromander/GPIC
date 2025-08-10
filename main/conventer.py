@@ -72,6 +72,7 @@ def catch_errors(func):
             tb = traceback.extract_tb(sys.exc_info()[2])  # Получаем стек вызовов
             last_call = tb[-1]
             showerror(type(e).__name__, f'{type(e).__name__} on line {last_call.lineno}: {e}')
+            logger.error(f'{type(e).__name__} on line {last_call.lineno}: {e}')
             return None
 
 
