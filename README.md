@@ -1,6 +1,8 @@
 <div align="center">
-  <h1>GPIC Converter</h1>
-
+  <h1>GPIC Converter<br>
+    &
+    GPIC file-loader</h1>
+  
   [![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)](https://github.com/bromander/GPIC/blob/master/LICENSE)
 </div>
 
