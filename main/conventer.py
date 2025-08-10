@@ -137,7 +137,8 @@ class Work_with_gppic:
                   .swapaxes(1, 2))
         return blocks, (h, w)
 
-    def _unblockify(self, blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8):
+    @staticmethod
+    def _unblockify(blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8):
         n_v, n_h, _, _ = blocks.shape
         padded = blocks.swapaxes(1, 2).reshape(n_v * block_size, n_h * block_size)
         h, w = orig_shape
