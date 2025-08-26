@@ -20,13 +20,16 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole conventer.py
 
 #handler that creates small loading window
 def loading_screen(func):
+    '''
+    creates mini-window - loading screen
+    '''
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         def disable_close(): pass
@@ -38,7 +41,6 @@ def loading_screen(func):
         loading_win.grab_set()
         loading_win.protocol("WM_DELETE_WINDOW", disable_close)
 
-        # Центрируем окно
         loading_win.geometry("200x100+{}+{}".format(
             (loading_win.winfo_screenwidth() - 200) // 2,
             (loading_win.winfo_screenheight() - 100) // 2
@@ -65,6 +67,9 @@ def loading_screen(func):
     return wrapper
 
 def catch_errors(func):
+    '''
+    if error occurs in the code shows error window to user and logging error to console
+    '''
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
@@ -86,6 +91,13 @@ def resource_path(relative_path):
 class Work_with_gppic:
 
     def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 0, dct_blocksize: int = 8):
+        '''
+        :param compression_dct_force: compression force during DCT compression
+        :param compression_quant_force: compression force during quantization compression
+        :param compression_type: if == 1: rounds the value, if == 2: rounds upward, if == 3: rounds down
+        :param array_data_type: defines the data type of the array
+        :param dct_blocksize: size of the blocks into which the image will be divided during DCT compression
+        '''
         self.compression_dct_force = compression_dct_force
         self.compression_quant_force = compression_quant_force
         self.compression_type = compression_type  # 0=floor,1=round,2=ceil
@@ -96,6 +108,11 @@ class Work_with_gppic:
     @catch_errors
     # returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     def extract_pixels_from_png(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
+        '''
+        returns pixels array from inage
+        :param path: path to file
+        :return: matrix with data of pixels
+        '''
         if path is None:
             raise ValueError("'path' not found")
         try:
@@ -119,6 +136,10 @@ class Work_with_gppic:
 
     @staticmethod
     def _dct2(block: numpy.ndarray) -> numpy.ndarray:
+        '''
+        applies the DCT compression method
+        :param block: 1 block - array of pixels
+        '''
         return dct(dct(block.T, norm='ortho').T, norm='ortho')
 
     @staticmethod
@@ -127,6 +148,12 @@ class Work_with_gppic:
 
     @staticmethod
     def _blockify(arr: numpy.ndarray, block_size: int = 8) -> Tuple[numpy.ndarray, Tuple[int, int]]:
+        '''
+        divides an array into blocks
+        :param arr: array of pixels
+        :param block_size: size  of block
+        :return: list of blocks & size of them
+        '''
         h, w = arr.shape
         pad_h = (-h) % block_size
         pad_w = (-w) % block_size
@@ -146,6 +173,13 @@ class Work_with_gppic:
 
     @staticmethod
     def _quantize(data: numpy.ndarray, force: int, method: int) -> numpy.ndarray:
+        '''
+        applies the quantization method
+        :param data: array of pixels
+        :param force: force of compression
+        :param method: if == 1: rounds the value, if == 2: rounds upward, if == 3: rounds down
+        :return:
+        '''
         if force != 1:
             mask = data != 0
             if method == 1:
@@ -183,6 +217,11 @@ class Work_with_gppic:
     @loading_screen
     @catch_errors
     def convert_to_gppic(self, pixel_matrix: list) -> io.BytesIO:
+        '''
+        converts an array of pixels
+        :param pixel_matrix: convents a pixel matrix into an array of pixels in GPIC format
+        :return: buffered image data
+        '''
         global size_img, size_img_uncompress, size_img_uncompress_DCT
         # Validate parameters
         for name, val in [('DCT force', self.compression_dct_force),
@@ -280,9 +319,14 @@ class Work_with_gppic:
 
     @catch_errors
     def open_image(self, file_obj: BinaryIO) -> Image.Image:
+        '''
+        turns the gpic format into a regular image
+        :param file_obj: buffered gpic image data
+        :return: pillow Image.image object
+        '''
         global gui
         data = file_obj.read()
-        offset = 5  # пропускаем первые 5 байт
+        offset = 5  # skip the first 5 bytes
         width = height = None
         pixels = None
 
@@ -345,9 +389,14 @@ class Work_with_gppic:
 
 #Class for encoding int/str to a byte object
 class ToBytes:
-    #encodes int to a byte object
     @staticmethod
     def to_bytes_int(number, length) -> bytes:
+        '''
+        encodes int to a byte object
+        :param number: number
+        :param length: bytes len
+        :return: number in bytes
+        '''
         if number is None:
             raise ValueError("attribute 'number' not found.")
         if not isinstance(number, int):
@@ -359,6 +408,11 @@ class ToBytes:
     # encodes str to a byte object
     @staticmethod
     def to_bytes_str(text) -> bytes:
+        '''
+        encodes str to a byte object
+        :param text: text
+        :return: string in bytes
+        '''
         if text is None:
             raise ValueError("attribute 'text' not found.")
         if not isinstance(text, str):
@@ -378,6 +432,9 @@ class Gui:
 
     #creates main root window
     def create_window(self) -> None:
+        '''
+        creates main window
+        '''
         global root
 
         root = tk.Tk()
@@ -562,9 +619,14 @@ class Gui:
 
     class Get_windows:
 
-        # creates window for choosing folder to save something
         @staticmethod
         def get_folder(filetypes, defaultextension) -> str:
+            '''
+            creates window for choosing folder
+            :param filetypes: filetypes
+            :param defaultextension: default file-type
+            :return: path
+            '''
             initialfile = ''.join(path.split("/")[-1:])
 
             export_path = filedialog.asksaveasfilename(
@@ -577,9 +639,13 @@ class Gui:
             return export_path
 
 
-        # creates window for choosing path and returns it
         @staticmethod
         def get_path(filetypes) -> str:
+            '''
+            creates window for choosing path
+            :param filetypes: filetypes
+            :return: path to file
+            '''
             path = filedialog.askopenfilename(
                 title="Choose file",
                 filetypes=filetypes
@@ -679,6 +745,9 @@ class Gui:
 
         @staticmethod
         def get_image_data():
+            '''
+            shows info-window with info of image
+            '''
             array_data_types = ["int8", "int16", "int32", "float16", "float32"]
 
             dct_compression_forse_data  = work_with_gppic.compression_dct_force
@@ -705,6 +774,9 @@ class Gui:
 
         @staticmethod
         def show_image_virgin():
+            '''
+            shows image without compression
+            '''
             work_with_gppic_virgin = Work_with_gppic()
             pixel_matrix_virgin = work_with_gppic_virgin.extract_pixels_from_png(path)
             file_image_virgin = work_with_gppic_virgin.convert_to_gppic(pixel_matrix_virgin)
@@ -731,10 +803,11 @@ class Gui:
 
 
 
-
-    #exports image as .png
     def export_file_as_png(self, img) -> None:
-
+        '''
+        exports image as .png
+        :param img: image data
+        '''
         export_path = self.Get_windows.get_folder([("png", "*.png"), ("All files", "*.*")], ".png")
         if export_path == "":
             pass
@@ -747,8 +820,11 @@ class Gui:
             logger.info("image has been exported as PNG!")
 
 
-    #exports image in .gppic format
     def export_file(self, img) -> None:
+        '''
+        exports image in .gppic format
+        :param img: image data
+        '''
         export_path = self.Get_windows.get_folder([("gpic", "*.gpic"), ("All files", "*.*")], ".gppic")
         if export_path == "":
             pass
@@ -760,9 +836,12 @@ class Gui:
             logger.info("file has been successfully exported!")
 
 
-    #gets bytes and returns them in a beautiful wrapper for user
     @staticmethod
     def format_size(size) -> str:
+        '''
+        gets bytes and returns them in a beautiful wrapper for user
+        :param size:
+        '''
         units = {
             1_000_000_000_000: 'Tb',
             1_000_000_000: 'Gb',
