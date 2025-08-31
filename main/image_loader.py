@@ -1,18 +1,14 @@
 import time
-
 from PIL import Image, ImageTk, ImageOps
 import numpy
 from tkinter import filedialog
 import tkinter as tk
-from tkinter import ttk
 from tkinter.messagebox import showerror, showwarning, showinfo
-import zlib
+import lzma
 import io
 import logging
 import struct
 import os
-from concurrent.futures import ThreadPoolExecutor
-import functools
 from scipy.fftpack import dct, idct
 from typing import Optional, List, Tuple, BinaryIO
 import coloredlogs
@@ -95,7 +91,7 @@ class Work_gpic:
                 comp_data = data[offset:offset + comp_len]
                 offset += comp_len
 
-                raw = zlib.decompress(comp_data)
+                raw = lzma.decompress(comp_data)
                 expected = width * height
                 if len(raw) < expected:
                     raise ValueError(f"Insufficient pixel data: {expected} expected, {len(raw)} received")

@@ -5,7 +5,7 @@ from tkinter import filedialog
 import tkinter as tk
 from tkinter import ttk
 from tkinter.messagebox import showerror, showwarning, showinfo
-import zlib
+import lzma
 import io
 import logging
 import struct
@@ -177,11 +177,6 @@ class Work_with_gppic:
         :param method: if == 1: rounds the value, if == 2: rounds upward, if == 3: rounds down
         :return:
         '''
-        if use_UTQ_DZ:
-            threshold = numpy.percentile(numpy.abs(data), 92)
-            compressed = data.copy()
-            compressed[numpy.abs(compressed) < threshold] = 0
-
 
         def _quantize(force, data, method):
             data =  data.astype(numpy.int32)
@@ -194,6 +189,11 @@ class Work_with_gppic:
                 elif method == 0:
                     data[mask] = numpy.floor(data[mask] / force) * force
             return data
+
+        if use_UTQ_DZ:
+            threshold = numpy.percentile(numpy.abs(data), 92)
+            compressed = data.copy()
+            compressed[numpy.abs(compressed) < threshold] = 0
 
         return _quantize(force, data, method)
 
@@ -285,7 +285,7 @@ class Work_with_gppic:
         size_img_uncompress = len(restored.tobytes())
 
         logger.debug("Using Deflate compression...")
-        compressed = zlib.compress(restored.tobytes())
+        compressed = lzma.compress(restored.tobytes(), preset=9)
         size_img = len(compressed)
 
         # Write sizes and data
@@ -361,7 +361,7 @@ class Work_with_gppic:
                 comp_data = data[offset:offset + comp_len]
                 offset += comp_len
 
-                raw = zlib.decompress(comp_data)
+                raw = lzma.decompress(comp_data)
                 expected = width * height
                 if len(raw) < expected:
                     raise ValueError(f"Insufficient pixel data: {expected} expected, {len(raw)} received")
