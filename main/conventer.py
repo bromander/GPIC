@@ -1,5 +1,4 @@
 import time
-
 from PIL import Image, ImageTk, ImageOps
 import numpy
 from tkinter import filedialog
@@ -11,7 +10,6 @@ import io
 import logging
 import struct
 import os
-from concurrent.futures import ThreadPoolExecutor
 import functools
 from scipy.fftpack import dct, idct
 from typing import Optional, List, Tuple, BinaryIO
@@ -74,13 +72,12 @@ def catch_errors(func):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            tb = traceback.extract_tb(sys.exc_info()[2])  # Получаем стек вызовов
+            tb = traceback.extract_tb(sys.exc_info()[2])
             last_call = tb[-1]
             showerror(type(e).__name__, f'{type(e).__name__} on line {last_call.lineno}: {e}')
             logger.error(f'{type(e).__name__} on line {last_call.lineno}: {e}')
-            return None
-
-
+            Gui.Debug.export_logs('ERROR')
+            exit()
     return wrapper
 
 def resource_path(relative_path):
@@ -172,7 +169,7 @@ class Work_with_gppic:
         return padded[:h, :w]
 
     @staticmethod
-    def _quantize(data: numpy.ndarray, force: int, method: int) -> numpy.ndarray:
+    def _quantize(data: numpy.ndarray, force: int, method: int, use_UTQ_DZ=None) -> numpy.ndarray:
         '''
         applies the quantization method
         :param data: array of pixels
@@ -180,15 +177,25 @@ class Work_with_gppic:
         :param method: if == 1: rounds the value, if == 2: rounds upward, if == 3: rounds down
         :return:
         '''
-        if force != 1:
-            mask = data != 0
-            if method == 1:
-                data[mask] = numpy.round(data[mask] / force) * force
-            elif method == 2:
-                data[mask] = numpy.ceil(data[mask] / force) * force
-            elif method == 0:
-                data[mask] = numpy.floor(data[mask] / force) * force
-        return data
+        if use_UTQ_DZ:
+            threshold = numpy.percentile(numpy.abs(data), 92)
+            compressed = data.copy()
+            compressed[numpy.abs(compressed) < threshold] = 0
+
+
+        def _quantize(force, data, method):
+            data =  data.astype(numpy.int32)
+            if force != 1:
+                mask = data != 0
+                if method == 1:
+                    data[mask] = numpy.round(data[mask] / force) * force
+                elif method == 2:
+                    data[mask] = numpy.ceil(data[mask] / force) * force
+                elif method == 0:
+                    data[mask] = numpy.floor(data[mask] / force) * force
+            return data
+
+        return _quantize(force, data, method)
 
     @staticmethod
     def _down(data: numpy.ndarray):
@@ -214,7 +221,7 @@ class Work_with_gppic:
 
 
     #converts list with png pixels to .gppic file in ram
-    @loading_screen
+    #@loading_screen
     @catch_errors
     def convert_to_gppic(self, pixel_matrix: list) -> io.BytesIO:
         '''
@@ -223,13 +230,6 @@ class Work_with_gppic:
         :return: buffered image data
         '''
         global size_img, size_img_uncompress, size_img_uncompress_DCT
-        # Validate parameters
-        for name, val in [('DCT force', self.compression_dct_force),
-                          ('quant force', self.compression_quant_force)]:
-            if not (0 <= val < 256):
-                raise ValueError(f"Invalid {name}: {val}")
-        if self.compression_type not in {0, 1, 2}:
-            raise ValueError(f"Invalid compression type: {self.compression_type}")
 
         height = len(pixel_matrix)
         width = len(pixel_matrix[0]) if height else 0
@@ -261,7 +261,7 @@ class Work_with_gppic:
                 blocks[i, j] = self._dct2(blocks[i, j])
         dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
         dct_mat = dct_mat[:orig[0], :orig[1]]
-        dct_mat = self._quantize(dct_mat, self.compression_dct_force, self.compression_type)
+        dct_mat = self._quantize(dct_mat, self.compression_dct_force, self.compression_type, use_UTQ_DZ=True)
 
         raw = dct_mat.astype(numpy.int32).tobytes()
 
@@ -277,7 +277,8 @@ class Work_with_gppic:
         logger.debug("Using Quantization...")
         logger.debug(f"quantization force: {self.compression_quant_force}")
         logger.debug(f"quantization type: {self.compression_type}")
-        restored = self._quantize(restored, self.compression_quant_force, self.compression_type).astype(self._dtype())
+        restored = self._quantize(restored, self.compression_quant_force, self.compression_type)
+        restored = numpy.clip(numpy.rint(restored), 0, 255).astype(self._dtype())
 
         restored = self._down(restored)
 
@@ -292,6 +293,11 @@ class Work_with_gppic:
         buf.write(compressed)
         buf.write(b"TIMAGE")
         buf.seek(0)
+        #print(size_img)
+        diff = numpy.mean((gray - restored) ** 2)
+        logger.debug(f"RMSE: {round(diff, 3)}")
+        #print(str(round(diff, 3)))
+        logger.debug(f"file size: {size_img}bytes")
         return buf
 
     @staticmethod
@@ -360,7 +366,7 @@ class Work_with_gppic:
                 if len(raw) < expected:
                     raise ValueError(f"Insufficient pixel data: {expected} expected, {len(raw)} received")
 
-                arr = numpy.frombuffer(raw[:expected], dtype=numpy.uint8).reshape((height, width))
+                arr = numpy.frombuffer(raw[:expected], dtype=numpy.uint8).reshape((height, width)).copy()
                 pixels = numpy.stack([arr, arr, arr], axis=-1)
 
             elif chunk_type == b"T":
@@ -583,7 +589,7 @@ class Gui:
             file_menu.add_command(label="Exit", command=sys.exit)
 
             edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
-            edit_menu.add_cascade(label="Array data type", menu=edit_array_data_type)
+            #edit_menu.add_cascade(label="Array data type", menu=edit_array_data_type)
             edit_menu.add_cascade(label="DCT block size", menu=edit_dct_block_size)
 
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
@@ -789,17 +795,22 @@ class Gui:
             os.startfile(path)
 
         @staticmethod
-        def export_logs():
+        def export_logs(log_type=None):
             def export_logger():
                 buffer_handler.flush()
                 log_buffer.seek(0)
                 return log_buffer.read()
+            if log_type == 'ERROR':
+                now_time = time.ctime(time.time()).replace(" ", "_").replace(":", ".")
+                with open(f"./Crash_Report_{now_time}.log", "w", encoding="UTF-8") as log:
+                    log.write(export_logger())
+                showinfo("GPIC", f"Crash report were successfully exported at path: {os.path.abspath(f"{now_time}.log")}")
+            else:
+                now_time = time.ctime(time.time()).replace(" ", "_").replace(":", ".")
+                with open(f"./{now_time}.log", "w", encoding="UTF-8") as log:
+                    log.write(export_logger())
 
-            now_time = time.ctime(time.time()).replace(" ", "_").replace(":", ".")
-            with open(f"./{now_time}.log", "w", encoding="UTF-8") as log:
-                log.write(export_logger())
-
-            showinfo("GPIC", f"logs were successfully exported at path: {os.path.abspath(f"{now_time}.log")}")
+                showinfo("GPIC", f"logs were successfully exported at path: {os.path.abspath(f"{now_time}.log")}")
 
 
 
@@ -921,5 +932,5 @@ def main():
 if __name__ == "__main__":
     logger = logging.getLogger("Logger")
     logger.setLevel(logging.DEBUG)
-
+    #logging.disable(logging.CRITICAL)
     main()
