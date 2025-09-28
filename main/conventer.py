@@ -18,10 +18,11 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.2"
+VERSION = "1.4"
 
 # pigar generate - create requirements.txt
-# pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole conventer.py
+# pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole --collect-all scipy conventer.py
+# pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole --collect-all scipy image_loader.py
 
 #handler that creates small loading window
 def loading_screen(func):
@@ -74,8 +75,8 @@ def catch_errors(func):
         except Exception as e:
             tb = traceback.extract_tb(sys.exc_info()[2])
             last_call = tb[-1]
-            showerror(type(e).__name__, f'{type(e).__name__} on line {last_call.lineno}: {e}')
             logger.error(f'{type(e).__name__} on line {last_call.lineno}: {e}')
+            showerror(type(e).__name__, f'{type(e).__name__} on line {last_call.lineno}: {e}')
             Gui.Debug.export_logs('ERROR')
             exit()
     return wrapper
@@ -87,7 +88,7 @@ def resource_path(relative_path):
 #Class for working with gppic/other images files
 class Work_with_gppic:
 
-    def __init__(self, compression_dct_force: int = 1, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 0, dct_blocksize: int = 8):
+    def __init__(self, compression_dct_force: int = 10, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 0, dct_blocksize: int = 8):
         '''
         :param compression_dct_force: compression force during DCT compression
         :param compression_quant_force: compression force during quantization compression
@@ -103,17 +104,18 @@ class Work_with_gppic:
 
     @staticmethod
     @catch_errors
-    # returns list with all pixels from png file. Example: [(0, 0, 0), (49, 35, 0), (42, 42, 8), (37, 40, 9)]
     def extract_pixels_from_png(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
         '''
         returns pixels array from inage
         :param path: path to file
         :return: matrix with data of pixels
         '''
+        global IMAGE_FORMAT
         if path is None:
             raise ValueError("'path' not found")
         try:
             with Image.open(path) as img:
+                IMAGE_FORMAT = img.format
                 img = img.convert("RGB")
                 width, height = img.size
                 logger.info(f"Picture size: {width}×{height}")
@@ -169,7 +171,7 @@ class Work_with_gppic:
         return padded[:h, :w]
 
     @staticmethod
-    def _quantize(data: numpy.ndarray, force: int, method: int, use_UTQ_DZ=None) -> numpy.ndarray:
+    def _quantize(data: numpy.ndarray, force: int, method: int) -> numpy.ndarray:
         '''
         applies the quantization method
         :param data: array of pixels
@@ -189,11 +191,6 @@ class Work_with_gppic:
                 elif method == 0:
                     data[mask] = numpy.floor(data[mask] / force) * force
             return data
-
-        if use_UTQ_DZ:
-            threshold = numpy.percentile(numpy.abs(data), 92)
-            compressed = data.copy()
-            compressed[numpy.abs(compressed) < threshold] = 0
 
         return _quantize(force, data, method)
 
@@ -229,7 +226,7 @@ class Work_with_gppic:
         :param pixel_matrix: convents a pixel matrix into an array of pixels in GPIC format
         :return: buffered image data
         '''
-        global size_img, size_img_uncompress, size_img_uncompress_DCT
+        global size_img, size_img_uncompress, size_img_uncompress_DCT, RMSE
 
         height = len(pixel_matrix)
         width = len(pixel_matrix[0]) if height else 0
@@ -246,12 +243,12 @@ class Work_with_gppic:
         pixels = numpy.array(pixel_matrix, dtype=self._dtype())
         gray = (0.299 * pixels[..., 0] +
                 0.587 * pixels[..., 1] +
-                0.114 * pixels[..., 2]).astype(numpy.int32)
+                0.114 * pixels[..., 2])
 
 
         gray = self._down(gray)
 
-        size_img_uncompress_DCT = gray.nbytes
+        size_img_uncompress_DCT = len(gray.tobytes())
 
         logger.debug("Using DCT cumPression...")
         logger.debug(f"DCT block size: {self.dct_blocksize}")
@@ -261,31 +258,19 @@ class Work_with_gppic:
                 blocks[i, j] = self._dct2(blocks[i, j])
         dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
         dct_mat = dct_mat[:orig[0], :orig[1]]
-        dct_mat = self._quantize(dct_mat, self.compression_dct_force, self.compression_type, use_UTQ_DZ=True)
+        logger.debug("Using quantization...")
+        dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type) #using quantization
 
-        raw = dct_mat.astype(numpy.int32).tobytes()
-
-        logger.debug("Reconstructing DCT cumPression...")
-        inv = numpy.frombuffer(raw, dtype=numpy.int32).reshape(orig[0], orig[1])
-        blocks2, _ = self._blockify(inv, block_size=self.dct_blocksize)
-        for i in range(blocks2.shape[0]):
-            for j in range(blocks2.shape[1]):
-                blocks2[i, j] = self._idct2(blocks2[i, j])
-        restored = self._unblockify(blocks2, orig, block_size=self.dct_blocksize)
-        restored = numpy.clip(numpy.rint(restored), 0, 255).astype(self._dtype())
-
-        logger.debug("Using Quantization...")
-        logger.debug(f"quantization force: {self.compression_quant_force}")
-        logger.debug(f"quantization type: {self.compression_type}")
-        restored = self._quantize(restored, self.compression_quant_force, self.compression_type)
-        restored = numpy.clip(numpy.rint(restored), 0, 255).astype(self._dtype())
+        restored = dct_mat_quantize.astype(numpy.float16)
 
         restored = self._down(restored)
 
         size_img_uncompress = len(restored.tobytes())
 
-        logger.debug("Using Deflate compression...")
+        logger.debug("Using lzma compression...")
+
         compressed = lzma.compress(restored.tobytes(), preset=9)
+
         size_img = len(compressed)
 
         # Write sizes and data
@@ -293,11 +278,11 @@ class Work_with_gppic:
         buf.write(compressed)
         buf.write(b"TIMAGE")
         buf.seek(0)
-        #print(size_img)
-        diff = numpy.mean((gray - restored) ** 2)
-        logger.debug(f"RMSE: {round(diff, 3)}")
-        #print(str(round(diff, 3)))
+
+        RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
+
         logger.debug(f"file size: {size_img}bytes")
+        del compressed, restored, gray, pixels
         return buf
 
     @staticmethod
@@ -361,18 +346,26 @@ class Work_with_gppic:
                 comp_data = data[offset:offset + comp_len]
                 offset += comp_len
 
+                logger.debug("Decompressing...")
                 raw = lzma.decompress(comp_data)
-                expected = width * height
-                if len(raw) < expected:
-                    raise ValueError(f"Insufficient pixel data: {expected} expected, {len(raw)} received")
 
-                arr = numpy.frombuffer(raw[:expected], dtype=numpy.uint8).reshape((height, width)).copy()
-                pixels = numpy.stack([arr, arr, arr], axis=-1)
+                inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
+
+                logger.debug("Blockifying and using IDCT...")
+                blocks2, _ = self._blockify(inv, block_size=self.dct_blocksize)
+                for i in range(blocks2.shape[0]):
+                    for j in range(blocks2.shape[1]):
+                        blocks2[i, j] = self._idct2(blocks2[i, j])
+
+                restored = self._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
+                restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+                pixels = numpy.stack([restored, restored, restored], axis=-1) #creating image
 
             elif chunk_type == b"T":
                 title = data[offset:offset + 4]
                 offset += 4
-                root.title(title.decode('utf-8'))
+                root.title(f"Gpic converter | {IMAGE_FORMAT} | {title.decode('utf-8')}")
                 logger.debug(f"Image type: {title.decode('utf-8')}")
 
             elif chunk_type == b'E':
@@ -445,8 +438,9 @@ class Gui:
 
         root = tk.Tk()
         root.iconbitmap(resource_path("GPIC_logo.ico"))
-        root.title("loading...")
+        root.title("Gpic converter | loading...")
         root.geometry("1000x800")
+        root.resizable(False, False)
 
 
         #creating buttons
@@ -470,7 +464,7 @@ class Gui:
             self.create_version_label()
             self.create_image_viewer(image)
             self.create_dct_compression_slider()
-            self.create_quantization_compression_slider()
+            #self.create_quantization_compression_slider()
             self.create_size_looker_label()
 
         # creates text label with data of image sizes
@@ -479,7 +473,8 @@ class Gui:
 
             size_looker_label = tk.Label(root,
                                          text=f"Original image size: {self.Gui.format_size(os.path.getsize(path))}\n"
-                                              f"Now file size: {self.Gui.format_size(size_img)}",
+                                              f"Now file size: {self.Gui.format_size(size_img)} ± 5Kb\n"
+                                              f"RMSE: {round(RMSE, 2)}",
                                          font=("Arial", 10))
             size_looker_label.pack(anchor="sw")
 
@@ -487,7 +482,7 @@ class Gui:
         def create_dct_compression_slider(self) -> None:
             compression_frame = tk.Frame(root, bg="#FFADB0", bd=5, relief=tk.GROOVE)
             compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
-            compression_frame.place(x=10, y=60, width=110, height=320)
+            compression_frame.place(x=10, y=60, width=110, height=460)
 
             slider_compression_label = tk.Label(compression_frame, text="DCT\ncompression", font=("Arial", 12),
                                                 bg="#FFADB0")
@@ -502,12 +497,13 @@ class Gui:
                 from_=1,
                 to=255,
                 orient=tk.VERTICAL,
-                length=300,
+                length=600,
                 command=self.Gui.On_triggers.on_dct_slider_compression,
             )
 
             slider_compression.pack()
-            slider_compression.place(height=250, y=45, x=25)
+            slider_compression.place(height=360, y=45, x=25)
+            slider_compression.set(10)
 
             # create slider for quantization compression
 
@@ -590,7 +586,7 @@ class Gui:
 
             edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
             #edit_menu.add_cascade(label="Array data type", menu=edit_array_data_type)
-            edit_menu.add_cascade(label="DCT block size", menu=edit_dct_block_size)
+            #edit_menu.add_cascade(label="DCT block size", menu=edit_dct_block_size)
 
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
             debug_menu.add_command(label="show_image_now", command=self.Gui.Debug.show_image)
@@ -754,23 +750,21 @@ class Gui:
             '''
             shows info-window with info of image
             '''
-            array_data_types = ["int8", "int16", "int32", "float16", "float32"]
 
             dct_compression_forse_data  = work_with_gppic.compression_dct_force
             quantization_compression_forse_data = work_with_gppic.compression_quant_force
             compression_type_data = work_with_gppic.compression_type
-            array_data_type = work_with_gppic.array_data_type
 
             dct_blocksize = work_with_gppic.dct_blocksize
 
             showinfo(title="get_image_data", message=f"dct_compression_forse : {dct_compression_forse_data}"
                                                      f"\nquantization_compression_forse_data : {quantization_compression_forse_data}"
                                                      f"\ncompression_type : {compression_type_data}"
-                                                     f"\narray_data_type : {array_data_types[array_data_type]} ({array_data_type})"
+                                                     f"\nRMSE : {round(RMSE, 6)}"
                                                      f"\ndct_blocksize : {dct_blocksize}"
                                                      f"\n\nuncompressed (by DCT & quantization) bytes size:  {size_img_uncompress_DCT}"
-                                                     f"\nuncompressed (by Deflate) bytes size:  {size_img_uncompress}"f""
-                                                     f"\nnow bytes size : {size_img}")
+                                                     f"\nuncompressed (by Lzma) bytes size:  {size_img_uncompress}"f""
+                                                     f"\nnow bytes size : {size_img} ± 5Kb")
 
         @staticmethod
         def show_image():
@@ -829,6 +823,7 @@ class Gui:
 
 
             logger.info("image has been exported as PNG!")
+            showinfo("Exported!", "Image was successfully exported as PNG!")
 
 
     def export_file(self, img) -> None:
@@ -845,6 +840,7 @@ class Gui:
 
 
             logger.info("file has been successfully exported!")
+            showinfo("Exported!", "Image was successfully exported as GPIC!")
 
 
     @staticmethod

@@ -38,31 +38,50 @@ def catch_errors(func):
 class Work_gpic:
 
     @staticmethod
+    def _idct2(block: numpy.ndarray) -> numpy.ndarray:
+        return idct(idct(block.T, norm='ortho').T, norm='ortho')
+
+    @staticmethod
+    def _blockify(arr: numpy.ndarray, block_size: int = 8) -> Tuple[numpy.ndarray, Tuple[int, int]]:
+        '''
+        divides an array into blocks
+        :param arr: array of pixels
+        :param block_size: size  of block
+        :return: list of blocks & size of them
+        '''
+        h, w = arr.shape
+        pad_h = (-h) % block_size
+        pad_w = (-w) % block_size
+        arr_padded = numpy.pad(arr, ((0, pad_h), (0, pad_w)), mode='constant')
+        H, W = arr_padded.shape
+        blocks = (arr_padded
+                  .reshape(H // block_size, block_size, W // block_size, block_size)
+                  .swapaxes(1, 2))
+        return blocks, (h, w)
+
+    @staticmethod
     def idct2(block: np.ndarray) -> np.ndarray:
         if block.ndim != 2 or block.shape[0] != block.shape[1]:
             raise ValueError(f"idct2 waiting square block, got {block.shape}")
         return idct(idct(block.T, norm='ortho').T, norm='ortho')
 
     @staticmethod
-    def unblockify(blocks: np.ndarray, orig_shape: Tuple[int, int], block_size: int = 8) -> np.ndarray:
-        logger.debug("unblocking array...")
+    def _unblockify(blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8):
+        n_v, n_h, _, _ = blocks.shape
+        padded = blocks.swapaxes(1, 2).reshape(n_v * block_size, n_h * block_size)
         h, w = orig_shape
-        n_v, n_h, b_h, b_w = blocks.shape
-
-        if b_h != block_size or b_w != block_size:
-            raise ValueError(f"block size {b_h}x{b_w} not relevant {block_size}")
-        full = (
-            blocks
-            .swapaxes(1, 2)
-            .reshape(n_v * block_size, n_h * block_size)
-        )
-        return full[:h, :w]
+        return padded[:h, :w]
 
     @catch_errors
     def open_image(self, file_obj: BinaryIO) -> Image.Image:
+        '''
+        turns the gpic format into a regular image
+        :param file_obj: buffered gpic image data
+        :return: pillow Image.image object
+        '''
         global gui
         data = file_obj.read()
-        offset = 5  # пропускаем первые 5 байт
+        offset = 5  # skip the first 5 bytes
         width = height = None
         pixels = None
 
@@ -92,17 +111,26 @@ class Work_gpic:
                 offset += comp_len
 
                 raw = lzma.decompress(comp_data)
-                expected = width * height
-                if len(raw) < expected:
-                    raise ValueError(f"Insufficient pixel data: {expected} expected, {len(raw)} received")
 
-                arr = numpy.frombuffer(raw[:expected], dtype=numpy.uint8).reshape((height, width))
-                pixels = numpy.stack([arr, arr, arr], axis=-1)
+                # интерпретируем как int32, а не uint8
+                inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
+
+                # разбиваем на блоки и применяем IDCT
+                blocks2, _ = self._blockify(inv)
+                for i in range(blocks2.shape[0]):
+                    for j in range(blocks2.shape[1]):
+                        blocks2[i, j] = self._idct2(blocks2[i, j])
+
+                restored = self._unblockify(blocks2, (height, width))
+                restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+                # теперь у тебя готовая "картинка"
+                pixels = numpy.stack([restored, restored, restored], axis=-1)
 
             elif chunk_type == b"T":
                 title = data[offset:offset + 4]
                 offset += 4
-                root.title(title.decode('utf-8'))
+                root.title(f"GPIC | {title.decode('utf-8')}")
                 logger.debug(f"Image type: {title.decode('utf-8')}")
 
             elif chunk_type == b'E':
@@ -130,6 +158,7 @@ class Gui:
         root.iconbitmap(resource_path("GPIC_logo.ico"))
         root.title("loading...")
         root.geometry("1000x800")
+        root.resizable(False, False)
         self.create_menu()
 
     @staticmethod
@@ -145,7 +174,7 @@ class Gui:
         image_viewer_frame.configure(width=1000, height=800)
         image_viewer_frame.pack_propagate(False)
 
-        image.thumbnail((1000, 800), Image.Resampling.LANCZOS)
+        image.thumbnail((560, 560), Image.Resampling.LANCZOS)
 
         image_ = ImageTk.PhotoImage(image)
 
@@ -156,6 +185,7 @@ class Gui:
 
     def create_menu(self) -> None:
         menu = tk.Menu(root)
+        root.option_add("*tearOff", tk.FALSE)
         debug_menu = tk.Menu()
         root.option_add("*tearOff", tk.FALSE)
 
@@ -172,7 +202,7 @@ class Gui:
 
         debug_menu.add_command(label="show_image_now", command=self.Debug.show_image)
         debug_menu.add_command(label="show_original_image", command=self.Debug.show_original)
-        debug_menu.add_checkbutton(label="export_logs", command=lambda: self.Debug.export_logs())
+        debug_menu.add_command(label="export_logs", command=lambda: self.Debug.export_logs())
 
         menu.add_cascade(label="File", menu=file_menu)
         menu.add_cascade(label="Debug", menu=debug_menu)
@@ -195,6 +225,7 @@ class Gui:
                 img.save(export_path, format="PNG")
 
             logger.info("image has been exported as PNG!")
+            showinfo("Exported!", "Image was successfully exported as PNG!")
 
     # exports image in .gppic format
     def export_file(self, img_path) -> None:
@@ -208,6 +239,7 @@ class Gui:
                     f.write(img.getvalue())
 
             logger.info("file has been successfully exported!")
+        showinfo("Exported!", "Image was successfully exported as GPIC!")
 
     class Get_windows:
 
