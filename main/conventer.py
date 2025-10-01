@@ -18,7 +18,7 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.4"
+VERSION = "1.4.1"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole --collect-all scipy conventer.py
@@ -85,7 +85,7 @@ def resource_path(relative_path):
     base_path = getattr(sys, '_MEIPASS', os.path.abspath("."))
     return os.path.join(base_path, relative_path)
 
-#Class for working with gppic/other images files
+
 class Work_with_gppic:
 
     def __init__(self, compression_dct_force: int = 10, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 0, dct_blocksize: int = 8):
@@ -102,9 +102,58 @@ class Work_with_gppic:
         self.array_data_type = array_data_type
         self.dct_blocksize = dct_blocksize
 
+    class Work_DCT:
+        @staticmethod
+        def _dct2(block: numpy.ndarray) -> numpy.ndarray:
+            '''
+            applies the DCT compression method
+            :param block: 1 block - array of pixels
+            '''
+            return dct(dct(block.T, norm='ortho').T, norm='ortho')
+
+        @staticmethod
+        def _idct2(block: numpy.ndarray) -> numpy.ndarray:
+            """
+            applies the IDCT compression method
+            :param block: 1 block - array of pixels
+            """
+            return idct(idct(block.T, norm='ortho').T, norm='ortho')
+
+        @staticmethod
+        def _blockify(arr: numpy.ndarray, block_size: int = 8) -> Tuple[numpy.ndarray, Tuple[int, int]]:
+            '''
+            divides an array into blocks
+            :param arr: array of pixels
+            :param block_size: size of block
+            :return: list of blocks & size of them
+            '''
+            h, w = arr.shape
+            pad_h = (-h) % block_size
+            pad_w = (-w) % block_size
+            arr_padded = numpy.pad(arr, ((0, pad_h), (0, pad_w)), mode='constant')
+            H, W = arr_padded.shape
+            blocks = (arr_padded
+                      .reshape(H // block_size, block_size, W // block_size, block_size)
+                      .swapaxes(1, 2))
+            return blocks, (h, w)
+
+        @staticmethod
+        def _unblockify(blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8):
+            """
+            divides an array of blocks into collected array
+            :param blocks: array of blocks
+            :param orig_shape: original image size
+            :param block_size: size of block
+            :return: array of pixels
+            """
+            n_v, n_h, _, _ = blocks.shape
+            padded = blocks.swapaxes(1, 2).reshape(n_v * block_size, n_h * block_size)
+            h, w = orig_shape
+            return padded[:h, :w]
+
     @staticmethod
     @catch_errors
-    def extract_pixels_from_png(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
+    def extract_pixels(path: str) -> Optional[List[List[Tuple[int, int, int]]]]:
         '''
         returns pixels array from inage
         :param path: path to file
@@ -134,43 +183,6 @@ class Work_with_gppic:
             return None
 
     @staticmethod
-    def _dct2(block: numpy.ndarray) -> numpy.ndarray:
-        '''
-        applies the DCT compression method
-        :param block: 1 block - array of pixels
-        '''
-        return dct(dct(block.T, norm='ortho').T, norm='ortho')
-
-    @staticmethod
-    def _idct2(block: numpy.ndarray) -> numpy.ndarray:
-        return idct(idct(block.T, norm='ortho').T, norm='ortho')
-
-    @staticmethod
-    def _blockify(arr: numpy.ndarray, block_size: int = 8) -> Tuple[numpy.ndarray, Tuple[int, int]]:
-        '''
-        divides an array into blocks
-        :param arr: array of pixels
-        :param block_size: size  of block
-        :return: list of blocks & size of them
-        '''
-        h, w = arr.shape
-        pad_h = (-h) % block_size
-        pad_w = (-w) % block_size
-        arr_padded = numpy.pad(arr, ((0, pad_h), (0, pad_w)), mode='constant')
-        H, W = arr_padded.shape
-        blocks = (arr_padded
-                  .reshape(H // block_size, block_size, W // block_size, block_size)
-                  .swapaxes(1, 2))
-        return blocks, (h, w)
-
-    @staticmethod
-    def _unblockify(blocks: numpy.ndarray, orig_shape: Tuple[int, int], block_size: int = 8):
-        n_v, n_h, _, _ = blocks.shape
-        padded = blocks.swapaxes(1, 2).reshape(n_v * block_size, n_h * block_size)
-        h, w = orig_shape
-        return padded[:h, :w]
-
-    @staticmethod
     def _quantize(data: numpy.ndarray, force: int, method: int) -> numpy.ndarray:
         '''
         applies the quantization method
@@ -180,19 +192,16 @@ class Work_with_gppic:
         :return:
         '''
 
-        def _quantize(force, data, method):
-            data =  data.astype(numpy.int32)
-            if force != 1:
-                mask = data != 0
-                if method == 1:
-                    data[mask] = numpy.round(data[mask] / force) * force
-                elif method == 2:
-                    data[mask] = numpy.ceil(data[mask] / force) * force
-                elif method == 0:
-                    data[mask] = numpy.floor(data[mask] / force) * force
-            return data
-
-        return _quantize(force, data, method)
+        data = data.astype(numpy.int32)
+        if force != 1:
+            mask = data != 0
+            if method == 1:
+                data[mask] = numpy.round(data[mask] / force) * force
+            elif method == 2:
+                data[mask] = numpy.ceil(data[mask] / force) * force
+            elif method == 0:
+                data[mask] = numpy.floor(data[mask] / force) * force
+        return data
 
     @staticmethod
     def _down(data: numpy.ndarray):
@@ -216,11 +225,8 @@ class Work_with_gppic:
         elif self.array_data_type == 4:
             return numpy.float32
 
-
-    #converts list with png pixels to .gppic file in ram
-    #@loading_screen
     @catch_errors
-    def convert_to_gppic(self, pixel_matrix: list) -> io.BytesIO:
+    def convert_to_gpic(self, pixel_matrix: list) -> io.BytesIO:
         '''
         converts an array of pixels
         :param pixel_matrix: convents a pixel matrix into an array of pixels in GPIC format
@@ -231,12 +237,6 @@ class Work_with_gppic:
         height = len(pixel_matrix)
         width = len(pixel_matrix[0]) if height else 0
         buf = io.BytesIO()
-
-        # Header: signature + dimensions
-        buf.write(b"\x89GPC\nO")
-        buf.write(struct.pack('>I', width))
-        buf.write(struct.pack('>I', height))
-        buf.write(b"A")
 
         logger.debug("Using greyscale...")
         logger.debug(f"Array type: {self._dtype()}")
@@ -252,10 +252,10 @@ class Work_with_gppic:
 
         logger.debug("Using DCT cumPression...")
         logger.debug(f"DCT block size: {self.dct_blocksize}")
-        blocks, orig = self._blockify(gray, block_size=self.dct_blocksize)
+        blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
         for i in range(blocks.shape[0]):
             for j in range(blocks.shape[1]):
-                blocks[i, j] = self._dct2(blocks[i, j])
+                blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
         dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
         dct_mat = dct_mat[:orig[0], :orig[1]]
         logger.debug("Using quantization...")
@@ -274,9 +274,16 @@ class Work_with_gppic:
         size_img = len(compressed)
 
         # Write sizes and data
+        # Header: signature + dimensions
+        buf.write(b"\x89GPC\n")  # CSIGN
+        buf.write(b"O")  # CDAT
+        buf.write(struct.pack('>I', width))
+        buf.write(struct.pack('>I', height))
         buf.write(struct.pack('>I', size_img))
+        buf.write(b"A")  # CPIX
         buf.write(compressed)
-        buf.write(b"TIMAGE")
+        buf.write(b"TIMAG") # CTXT
+        buf.write(b"E") # CEND
         buf.seek(0)
 
         RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
@@ -284,29 +291,6 @@ class Work_with_gppic:
         logger.debug(f"file size: {size_img}bytes")
         del compressed, restored, gray, pixels
         return buf
-
-    @staticmethod
-    def idct2(block: numpy.ndarray) -> numpy.ndarray:
-        if block.ndim != 2 or block.shape[0] != block.shape[1]:
-            raise ValueError(f"idct2 waiting square block, got {block.shape}")
-        return idct(idct(block.T, norm='ortho').T, norm='ortho')
-
-    @staticmethod
-    def unblockify(blocks: numpy.ndarray,
-                   orig_shape: Tuple[int, int],
-                   block_size: int = 8) -> numpy.ndarray:
-        logger.debug("unblocking array...")
-        h, w = orig_shape
-        n_v, n_h, b_h, b_w = blocks.shape
-
-        if b_h != block_size or b_w != block_size:
-            raise ValueError(f"block size {b_h}x{b_w} not relevant {block_size}")
-        full = (
-            blocks
-            .swapaxes(1, 2)
-            .reshape(n_v * block_size, n_h * block_size)
-        )
-        return full[:h, :w]
 
     @catch_errors
     def open_image(self, file_obj: BinaryIO) -> Image.Image:
@@ -333,14 +317,15 @@ class Work_with_gppic:
                     raise ValueError("Not enough data for the image size")
                 width, height = struct.unpack('>II', data[offset:offset + 8])
                 offset += 8
+                (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
+                offset += 4
+
 
             elif chunk_type == b'A':
                 if width is None or height is None:
                     raise ValueError("The image dimensions are not set before the pixel data")
                 if offset + 4 > len(data):
                     raise ValueError("Insufficient data for the length of the compressed block")
-                (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
-                offset += 4
                 if offset + comp_len > len(data):
                     raise ValueError("Not enough data for a compressed block")
                 comp_data = data[offset:offset + comp_len]
@@ -352,12 +337,12 @@ class Work_with_gppic:
                 inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
 
                 logger.debug("Blockifying and using IDCT...")
-                blocks2, _ = self._blockify(inv, block_size=self.dct_blocksize)
+                blocks2, _ = self.Work_DCT._blockify(inv, block_size=self.dct_blocksize)
                 for i in range(blocks2.shape[0]):
                     for j in range(blocks2.shape[1]):
-                        blocks2[i, j] = self._idct2(blocks2[i, j])
+                        blocks2[i, j] = self.Work_DCT._idct2(blocks2[i, j])
 
-                restored = self._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
+                restored = self.Work_DCT._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
                 restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
 
                 pixels = numpy.stack([restored, restored, restored], axis=-1) #creating image
@@ -386,48 +371,12 @@ class Work_with_gppic:
         return ImageOps.exif_transpose(img)
 
 
-#Class for encoding int/str to a byte object
-class ToBytes:
-    @staticmethod
-    def to_bytes_int(number, length) -> bytes:
-        '''
-        encodes int to a byte object
-        :param number: number
-        :param length: bytes len
-        :return: number in bytes
-        '''
-        if number is None:
-            raise ValueError("attribute 'number' not found.")
-        if not isinstance(number, int):
-            raise TypeError("'number' shood be integer.")
-        if length <= 0:
-            raise ValueError("'length' must be >0.")
-        return number.to_bytes(length, byteorder='big')
-
-    # encodes str to a byte object
-    @staticmethod
-    def to_bytes_str(text) -> bytes:
-        '''
-        encodes str to a byte object
-        :param text: text
-        :return: string in bytes
-        '''
-        if text is None:
-            raise ValueError("attribute 'text' not found.")
-        if not isinstance(text, str):
-            raise TypeError("'text' should be str.")
-        try:
-            return text.encode('ascii')
-        except UnicodeEncodeError:
-            raise ValueError("String contains invalid ASCII characters..")
-
-
-#class for creating and working with GUIs
 class Gui:
     def __init__(self):
         self.Create_widgets = self.Create_widgets(self)
         self.On_triggers = self.On_triggers(self)
         self.Debug = self.Debug(self)
+        self.Export = self.Export(self)
 
     #creates main root window
     def create_window(self) -> None:
@@ -460,15 +409,15 @@ class Gui:
             self.Gui = gui_instance
 
         def create_main_widgets(self, image):
-            self.create_menu()
-            self.create_version_label()
-            self.create_image_viewer(image)
-            self.create_dct_compression_slider()
+            self._create_menu()
+            self._create_version_label()
+            self._create_image_viewer(image)
+            self._create_dct_compression_slider()
             #self.create_quantization_compression_slider()
-            self.create_size_looker_label()
+            self._create_size_looker_label()
 
         # creates text label with data of image sizes
-        def create_size_looker_label(self) -> None:
+        def _create_size_looker_label(self) -> None:
             global size_looker_label
 
             size_looker_label = tk.Label(root,
@@ -479,7 +428,7 @@ class Gui:
             size_looker_label.pack(anchor="sw")
 
         #create slider for DCT compression
-        def create_dct_compression_slider(self) -> None:
+        def _create_dct_compression_slider(self) -> None:
             compression_frame = tk.Frame(root, bg="#FFADB0", bd=5, relief=tk.GROOVE)
             compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
             compression_frame.place(x=10, y=60, width=110, height=460)
@@ -508,7 +457,7 @@ class Gui:
             # create slider for quantization compression
 
         #create slider for quantization compression
-        def create_quantization_compression_slider(self) -> None:
+        def _create_quantization_compression_slider(self) -> None:
                 compression_frame = tk.Frame(root, bg="lightblue", bd=5, relief=tk.GROOVE)
                 compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
                 compression_frame.place(x=10, y=395, width=110, height=320)
@@ -535,7 +484,7 @@ class Gui:
 
         #creates image preview window
         @staticmethod
-        def create_image_viewer(image) -> None:
+        def _create_image_viewer(image) -> None:
             global image_label
             global image_viewer_frame
 
@@ -554,11 +503,11 @@ class Gui:
             image_label.image = image_
             image_label.pack(anchor="center", ipady=200)
 
-        def create_version_label(self):
+        def _create_version_label(self):
             version_label = tk.Label(root, text=f"GPIC Conventer V{VERSION} ", font=("Arial", 10))
             version_label.pack(anchor="se")
 
-        def create_menu(self) -> None:
+        def _create_menu(self) -> None:
             global edit_compr_type_menu_var, edit_array_data_type_var, edit_dct_block_size_var, show_console_var
             menu = tk.Menu(root)
             root.option_add("*tearOff", tk.FALSE)
@@ -666,8 +615,8 @@ class Gui:
 
             print()
             # re-creating image with new settings
-            pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
-            file_image = work_with_gppic.convert_to_gppic(pixel_matrix)
+            pixel_matrix = work_with_gppic.extract_pixels(path)
+            file_image = work_with_gppic.convert_to_gpic(pixel_matrix)
             file = work_with_gppic.open_image(file_image)
             image_label.destroy()
 
@@ -777,9 +726,9 @@ class Gui:
             '''
             shows image without compression
             '''
-            work_with_gppic_virgin = Work_with_gppic()
-            pixel_matrix_virgin = work_with_gppic_virgin.extract_pixels_from_png(path)
-            file_image_virgin = work_with_gppic_virgin.convert_to_gppic(pixel_matrix_virgin)
+            work_with_gppic_virgin = Work_with_gppic(compression_dct_force=1)
+            pixel_matrix_virgin = work_with_gppic_virgin.extract_pixels(path)
+            file_image_virgin = work_with_gppic_virgin.convert_to_gpic(pixel_matrix_virgin)
             file_image_virgin.seek(0)
             img = work_with_gppic_virgin.open_image(file_image_virgin)
             img.show()
@@ -908,7 +857,6 @@ def main():
 
     gui = Gui()
     gui.create_window()
-
     work_with_gppic = Work_with_gppic()
 
     path = gui.Get_windows.get_path([("Images", "*.png;*.jpg"), ("Txt files", "*.txt"), ("All files", "*.*")])
@@ -917,8 +865,8 @@ def main():
     if path == "":
         sys.exit()
 
-    pixel_matrix = work_with_gppic.extract_pixels_from_png(path)
-    file_image = work_with_gppic.convert_to_gppic(pixel_matrix)
+    pixel_matrix = work_with_gppic.extract_pixels(path)
+    file_image = work_with_gppic.convert_to_gpic(pixel_matrix)
     gui.Create_widgets.create_main_widgets(work_with_gppic.open_image(file_image))
 
     logger.info("DONE")
