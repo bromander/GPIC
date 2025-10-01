@@ -78,7 +78,7 @@ def catch_errors(func):
             logger.error(f'{type(e).__name__} on line {last_call.lineno}: {e}')
             showerror(type(e).__name__, f'{type(e).__name__} on line {last_call.lineno}: {e}')
             Gui.Debug.export_logs('ERROR')
-            exit()
+            sys.exit()
     return wrapper
 
 def resource_path(relative_path):
@@ -622,8 +622,8 @@ class Gui:
             size_looker_label.destroy()
             image_viewer_frame.destroy()
 
-            self.Gui.Create_widgets.create_image_viewer(file)
-            self.Gui.Create_widgets.create_size_looker_label()
+            self.Gui.Create_widgets._create_image_viewer(file)
+            self.Gui.Create_widgets._create_size_looker_label()
 
 
         # edits DST CUMpression value in Work_with_gppic class

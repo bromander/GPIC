@@ -97,14 +97,14 @@ class Work_gpic:
                     raise ValueError("Not enough data for the image size")
                 width, height = struct.unpack('>II', data[offset:offset + 8])
                 offset += 8
+                (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
+                offset += 4
 
             elif chunk_type == b'A':
                 if width is None or height is None:
                     raise ValueError("The image dimensions are not set before the pixel data")
                 if offset + 4 > len(data):
                     raise ValueError("Insufficient data for the length of the compressed block")
-                (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
-                offset += 4
                 if offset + comp_len > len(data):
                     raise ValueError("Not enough data for a compressed block")
                 comp_data = data[offset:offset + comp_len]
@@ -348,7 +348,7 @@ def main():
         with open(path, "rb") as img:
             file = gpic.open_image(img)
     except FileNotFoundError:
-        exit()
+        sys.exit()
     gui.create_image_viewer(file)
 
     root.mainloop()
