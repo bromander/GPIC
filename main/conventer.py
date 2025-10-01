@@ -376,7 +376,6 @@ class Gui:
         self.Create_widgets = self.Create_widgets(self)
         self.On_triggers = self.On_triggers(self)
         self.Debug = self.Debug(self)
-        self.Export = self.Export(self)
 
     #creates main root window
     def create_window(self) -> None:

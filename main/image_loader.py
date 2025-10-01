@@ -264,6 +264,7 @@ class Gui:
                 title="Choose file",
                 filetypes=filetypes
             )
+
             return path
 
     class Debug:
@@ -343,8 +344,11 @@ def main():
 
     gui.create_window()
     path = gui.Get_windows.get_path([("GPIC", "*.GPIC"), ("Txt files", "*.txt"), ("All files", "*.*")])
-    with open(path, "rb") as img:
-        file = gpic.open_image(img)
+    try:
+        with open(path, "rb") as img:
+            file = gpic.open_image(img)
+    except FileNotFoundError:
+        exit()
     gui.create_image_viewer(file)
 
     root.mainloop()
