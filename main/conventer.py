@@ -11,6 +11,7 @@ import logging
 import struct
 import os
 import functools
+import scipy
 from scipy.fftpack import dct, idct
 from typing import Optional, List, Tuple, BinaryIO
 import coloredlogs
@@ -18,7 +19,7 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.4.1"
+VERSION = "1.5"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole --collect-all scipy conventer.py
@@ -88,7 +89,14 @@ def resource_path(relative_path):
 
 class Work_with_gppic:
 
-    def __init__(self, compression_dct_force: int = 10, compression_quant_force: int = 1, compression_type: int = 1, array_data_type: int = 0, dct_blocksize: int = 8):
+    def __init__(self, compression_dct_force: int = 10,
+                 compression_quant_force: int = 1,
+                 compression_type: int = 1,
+                 array_data_type: int = 0,
+                 dct_blocksize: int = 8,
+                 brightnes: int = 0,
+                 sharpness: int = 0,
+                 format_version: int = 2):
         '''
         :param compression_dct_force: compression force during DCT compression
         :param compression_quant_force: compression force during quantization compression
@@ -101,6 +109,14 @@ class Work_with_gppic:
         self.compression_type = compression_type  # 0=floor,1=round,2=ceil
         self.array_data_type = array_data_type
         self.dct_blocksize = dct_blocksize
+        self.brightnes = brightnes
+        self.kernel = numpy.array([
+                        [0, -1,  0],
+                        [-1,  5, -1],
+                        [0, -1,  0]
+                        ])
+        self.sharpness = sharpness
+        self.format_version = format_version
 
     class Work_DCT:
         @staticmethod
@@ -225,6 +241,16 @@ class Work_with_gppic:
         elif self.array_data_type == 4:
             return numpy.float32
 
+    def _sharpen(self, img, alpha, sigma=1.0):
+        blurred = scipy.ndimage.gaussian_filter(img, sigma=sigma)
+
+        details = img.astype(float) - blurred.astype(float)
+
+        sharpened = img.astype(float) + alpha * details
+
+        sharpened = numpy.clip(sharpened, 0, 255)
+        return sharpened
+
     @catch_errors
     def convert_to_gpic(self, pixel_matrix: list) -> io.BytesIO:
         '''
@@ -234,63 +260,165 @@ class Work_with_gppic:
         '''
         global size_img, size_img_uncompress, size_img_uncompress_DCT, RMSE
 
-        height = len(pixel_matrix)
-        width = len(pixel_matrix[0]) if height else 0
-        buf = io.BytesIO()
+        if self.format_version == 2:
 
-        logger.debug("Using greyscale...")
-        logger.debug(f"Array type: {self._dtype()}")
-        pixels = numpy.array(pixel_matrix, dtype=self._dtype())
-        gray = (0.299 * pixels[..., 0] +
-                0.587 * pixels[..., 1] +
-                0.114 * pixels[..., 2])
+            height = len(pixel_matrix)
+            width = len(pixel_matrix[0]) if height else 0
+            buf = io.BytesIO()
 
+            logger.debug("Using greyscale...")
+            logger.debug(f"Array type: {self._dtype()}")
+            pixels = numpy.array(pixel_matrix, dtype=self._dtype())
+            gray = (0.299 * pixels[..., 0] +
+                    0.587 * pixels[..., 1] +
+                    0.114 * pixels[..., 2])
 
-        gray = self._down(gray)
+            #Visual effects
+            gray += self.brightnes #editing brightness
+            gray = self._sharpen(gray, self.sharpness/10) #editing sharpness
 
-        size_img_uncompress_DCT = len(gray.tobytes())
+            gray = self._down(gray)
 
-        logger.debug("Using DCT cumPression...")
-        logger.debug(f"DCT block size: {self.dct_blocksize}")
-        blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
-        for i in range(blocks.shape[0]):
-            for j in range(blocks.shape[1]):
-                blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
-        dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
-        dct_mat = dct_mat[:orig[0], :orig[1]]
-        logger.debug("Using quantization...")
-        dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type) #using quantization
+            size_img_uncompress_DCT = len(gray.tobytes())
 
-        restored = dct_mat_quantize.astype(numpy.float16)
+            logger.debug("Using DCT cumPression...")
+            logger.debug(f"DCT block size: {self.dct_blocksize}")
+            blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
+            for i in range(blocks.shape[0]):
+                for j in range(blocks.shape[1]):
+                    blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
+            dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
+            dct_mat = dct_mat[:orig[0], :orig[1]]
+            logger.debug("Using quantization...")
+            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type) #using quantization
 
-        restored = self._down(restored)
+            restored = dct_mat_quantize.astype(numpy.float16)
 
-        size_img_uncompress = len(restored.tobytes())
+            restored = self._down(restored)
 
-        logger.debug("Using lzma compression...")
+            size_img_uncompress = len(restored.tobytes())
 
-        compressed = lzma.compress(restored.tobytes(), preset=9)
+            logger.debug("Using lzma compression...")
 
-        size_img = len(compressed)
+            compressed = lzma.compress(restored.tobytes(), preset=9)
 
-        # Write sizes and data
-        # Header: signature + dimensions
-        buf.write(b"\x89GPC\n")  # CSIGN
-        buf.write(b"O")  # CDAT
-        buf.write(struct.pack('>I', width))
-        buf.write(struct.pack('>I', height))
-        buf.write(struct.pack('>I', size_img))
-        buf.write(b"A")  # CPIX
-        buf.write(compressed)
-        buf.write(b"TIMAG") # CTXT
-        buf.write(b"E") # CEND
-        buf.seek(0)
+            size_img = len(compressed)
 
-        RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
+            # Write sizes and data
+            # Header: signature + dimensions
+            buf.write(b"\x89GPC\n")  # CSIGN
+            buf.write(b"O")  # CDAT
+            buf.write(struct.pack('>f', self.format_version)) #version
+            buf.write(struct.pack('>I', width))
+            buf.write(struct.pack('>I', height))
+            buf.write(struct.pack('>I', size_img))
+            buf.write(b"A")  # CPIX
+            buf.write(compressed)
+            buf.write(b"TIMAG") # CTXT
+            buf.write(b"E") # CEND
+            buf.seek(0)
 
-        logger.debug(f"file size: {size_img}bytes")
-        del compressed, restored, gray, pixels
-        return buf
+            RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
+            logger.debug(f"RMSE: {RMSE}")
+
+            logger.debug(f"file size: {size_img}bytes")
+            del compressed, restored, gray, pixels
+            return buf
+
+        elif self.format_version == 1:
+
+            height = len(pixel_matrix)
+            width = len(pixel_matrix[0]) if height else 0
+            buf = io.BytesIO()
+
+            logger.debug("Using greyscale...")
+            logger.debug(f"Array type: {self._dtype()}")
+            pixels = numpy.array(pixel_matrix, dtype=self._dtype())
+            gray_new = (0.299 * pixels[..., 0] +
+                    0.587 * pixels[..., 1] +
+                    0.114 * pixels[..., 2])
+
+            #Visual effects
+            gray_new += self.brightnes #editing brightness
+            gray_new = self._sharpen(gray_new, self.sharpness/10) #editing sharpness
+
+            gray = self._down(gray_new)
+
+            size_img_uncompress_DCT = len(gray.tobytes())
+
+            size_img_uncompress = len(gray.tobytes())
+
+            logger.debug("Using lzma compression...")
+            compressed = lzma.compress(gray.tobytes(), preset=9)
+
+            size_img = len(compressed)
+
+            # Write sizes and data
+            # Header: signature + dimensions
+            buf.write(b"\x89GPC\n")  # CSIGN
+            buf.write(b"O")  # CDAT
+            buf.write(struct.pack('>f', self.format_version)) #version
+            buf.write(struct.pack('>I', width))
+            buf.write(struct.pack('>I', height))
+            buf.write(struct.pack('>I', size_img))
+            buf.write(b"A")  # CPIX
+            buf.write(compressed)
+            buf.write(b"TIMAG") # CTXT
+            buf.write(b"E") # CEND
+            buf.seek(0)
+
+            RMSE = numpy.mean((gray - gray_new) ** 2)
+            logger.debug(f"RMSE: {RMSE}")
+
+            logger.debug(f"file size: {size_img}bytes")
+            del gray, pixels
+            return buf
+
+        elif self.format_version == 0:
+
+            height = len(pixel_matrix)
+            width = len(pixel_matrix[0]) if height else 0
+            buf = io.BytesIO()
+
+            logger.debug("Using greyscale...")
+            logger.debug(f"Array type: {self._dtype()}")
+            pixels = numpy.array(pixel_matrix, dtype=self._dtype())
+            gray = (0.299 * pixels[..., 0] +
+                    0.587 * pixels[..., 1] +
+                    0.114 * pixels[..., 2])
+
+            #Visual effects
+            gray += self.brightnes #editing brightness
+            gray = self._sharpen(gray, self.sharpness/10) #editing sharpness
+
+            gray = self._down(gray)
+
+            size_img_uncompress_DCT = len(gray.tobytes())
+
+            size_img_uncompress = len(gray.tobytes())
+
+            size_img = len(gray.tobytes())
+
+            # Write sizes and data
+            # Header: signature + dimensions
+            buf.write(b"\x89GPC\n")  # CSIGN
+            buf.write(b"O")  # CDAT
+            buf.write(struct.pack('>f', self.format_version)) #version
+            buf.write(struct.pack('>I', width))
+            buf.write(struct.pack('>I', height))
+            buf.write(struct.pack('>I', size_img))
+            buf.write(b"A")  # CPIX
+            buf.write(gray.tobytes())
+            buf.write(b"TIMAG") # CTXT
+            buf.write(b"E") # CEND
+            buf.seek(0)
+
+            RMSE = 0
+            logger.debug(f"RMSE: {RMSE}")
+
+            logger.debug(f"file size: {size_img}bytes")
+            del gray, pixels
+            return buf
 
     @catch_errors
     def open_image(self, file_obj: BinaryIO) -> Image.Image:
@@ -299,22 +427,27 @@ class Work_with_gppic:
         :param file_obj: buffered gpic image data
         :return: pillow Image.image object
         '''
-        global gui
+        global gui, image_format_version
         data = file_obj.read()
         offset = 5  # skip the first 5 bytes
+        comp_len = 0
+        image_format_version = 2
         width = height = None
         pixels = None
 
         logger.debug("reading image...")
-
         while offset < len(data):
             chunk_type = data[offset:offset + 1]
             offset += 1
 
+
             if chunk_type == b'O':
                 # читаем два uint32 BE
-                if offset + 8 > len(data):
+                if offset + 16 > len(data):
                     raise ValueError("Not enough data for the image size")
+                image_format_version = struct.unpack('>f', data[offset:offset + 4])[0]
+                logger.info(f"Format version: {image_format_version}")
+                offset += 4
                 width, height = struct.unpack('>II', data[offset:offset + 8])
                 offset += 8
                 (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
@@ -327,30 +460,57 @@ class Work_with_gppic:
                 if offset + 4 > len(data):
                     raise ValueError("Insufficient data for the length of the compressed block")
                 if offset + comp_len > len(data):
-                    raise ValueError("Not enough data for a compressed block")
-                comp_data = data[offset:offset + comp_len]
-                offset += comp_len
+                    raise ValueError(f"Not enough data for a compressed block. {offset} + {comp_len} > {len(data)}")
 
-                logger.debug("Decompressing...")
-                raw = lzma.decompress(comp_data)
+                if image_format_version == 2:
+                    logger.debug("getting pixel data...")
 
-                inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
+                    comp_data = data[offset:offset + comp_len]
+                    offset += comp_len
 
-                logger.debug("Blockifying and using IDCT...")
-                blocks2, _ = self.Work_DCT._blockify(inv, block_size=self.dct_blocksize)
-                for i in range(blocks2.shape[0]):
-                    for j in range(blocks2.shape[1]):
-                        blocks2[i, j] = self.Work_DCT._idct2(blocks2[i, j])
+                    logger.debug("Decompressing...")
+                    raw = lzma.decompress(comp_data)
 
-                restored = self.Work_DCT._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
-                restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+                    inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
 
-                pixels = numpy.stack([restored, restored, restored], axis=-1) #creating image
+                    logger.debug("Blockifying and using IDCT...")
+                    blocks2, _ = self.Work_DCT._blockify(inv, block_size=self.dct_blocksize)
+                    for i in range(blocks2.shape[0]):
+                        for j in range(blocks2.shape[1]):
+                            blocks2[i, j] = self.Work_DCT._idct2(blocks2[i, j])
+
+                    restored = self.Work_DCT._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
+                    restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([restored, restored, restored], axis=-1) #creating image
+
+                elif image_format_version == 1:
+                    logger.debug("getting pixel data...")
+
+                    raw = data[offset:offset + comp_len]
+                    offset += comp_len
+                    raw = lzma.decompress(raw)
+
+                    raw = numpy.frombuffer(raw).reshape((height, width))
+                    raw = numpy.clip(numpy.rint(raw), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([raw, raw, raw], axis=-1) #creating image
+
+                elif image_format_version == 0:
+                    logger.debug("getting pixel data...")
+
+                    raw = data[offset:offset + comp_len]
+                    offset += comp_len
+
+                    raw = numpy.frombuffer(raw).reshape((height, width))
+                    raw = numpy.clip(numpy.rint(raw), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([raw, raw, raw], axis=-1) #creating image
 
             elif chunk_type == b"T":
                 title = data[offset:offset + 4]
                 offset += 4
-                root.title(f"Gpic converter | {IMAGE_FORMAT} | {title.decode('utf-8')}")
+                root.title(f"Gpic converter | {IMAGE_FORMAT} | {width} X {height} | {title.decode('utf-8')}")
                 logger.debug(f"Image type: {title.decode('utf-8')}")
 
             elif chunk_type == b'E':
@@ -365,7 +525,7 @@ class Work_with_gppic:
                 offset += length
 
         if pixels is None:
-            raise ValueError("Pixel block not found (chunk 'A')")
+            raise ValueError("Pixels is None")
 
         img = Image.fromarray(pixels, mode='RGB')
         return ImageOps.exif_transpose(img)
@@ -411,8 +571,9 @@ class Gui:
             self._create_menu()
             self._create_version_label()
             self._create_image_viewer(image)
+            self._create_image_brightness_slider()
+            self._create_image_sharpness_slider()
             self._create_dct_compression_slider()
-            #self.create_quantization_compression_slider()
             self._create_size_looker_label()
 
         # creates text label with data of image sizes
@@ -432,7 +593,7 @@ class Gui:
             compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
             compression_frame.place(x=10, y=60, width=110, height=460)
 
-            slider_compression_label = tk.Label(compression_frame, text="DCT\ncompression", font=("Arial", 12),
+            slider_compression_label = tk.Label(compression_frame, text="Quantization\ncompression", font=("Arial", 12),
                                                 bg="#FFADB0")
 
             slider_compression_label.pack(anchor="center")
@@ -450,10 +611,60 @@ class Gui:
             )
 
             slider_compression.pack()
-            slider_compression.place(height=360, y=45, x=25)
+            slider_compression.place(height=390, y=45, x=25)
             slider_compression.set(10)
 
-            # create slider for quantization compression
+        def _create_image_brightness_slider(self) -> None:
+            brightness_frame = tk.Frame(root, bg="#AFEEEE", bd=5, relief=tk.GROOVE)
+            brightness_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
+            brightness_frame.place(x=880, y=60, width=110, height=320)
+
+            slider_brightness_label = tk.Label(brightness_frame, text="  brightness", font=("Arial", 12),
+                                                bg="#AFEEEE")
+
+            slider_brightness_label.pack(anchor="center")
+            slider_brightness_label.place(x=1)
+
+            slider_brightness = tk.Scale(
+                brightness_frame,
+                bg="#AFEEEE",
+                bd=3,
+                from_=100,
+                to=-100,
+                orient=tk.VERTICAL,
+                length=600,
+                command=self.Gui.On_triggers.on_bright_slider,
+            )
+
+            slider_brightness.pack()
+            slider_brightness.place(height=270, y=30, x=25)
+            slider_brightness.set(0)
+
+        def _create_image_sharpness_slider(self) -> None:
+            sharpness_frame = tk.Frame(root, bg="#C0C0C0", bd=5, relief=tk.GROOVE)
+            sharpness_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
+            sharpness_frame.place(x=880, y=400, width=110, height=320)
+
+            slider_sharpness_label = tk.Label(sharpness_frame, text="  sharpness", font=("Arial", 12),
+                                                bg="#C0C0C0")
+
+            slider_sharpness_label.pack(anchor="center")
+            slider_sharpness_label.place(x=1)
+
+            slider_sharpness = tk.Scale(
+                sharpness_frame,
+                bg="#C0C0C0",
+                bd=3,
+                from_=0,
+                to=100,
+                orient=tk.VERTICAL,
+                length=600,
+                command=self.Gui.On_triggers.on_sharp_slider,
+            )
+
+            slider_sharpness.pack()
+            slider_sharpness.place(height=270, y=30, x=25)
+            slider_sharpness.set(0)
 
         #create slider for quantization compression
         def _create_quantization_compression_slider(self) -> None:
@@ -507,7 +718,7 @@ class Gui:
             version_label.pack(anchor="se")
 
         def _create_menu(self) -> None:
-            global edit_compr_type_menu_var, edit_array_data_type_var, edit_dct_block_size_var, show_console_var
+            global edit_compr_type_menu_var, edit_array_data_type_var, edit_dct_block_size_var, show_console_var, edit_format_version_var
             menu = tk.Menu(root)
             root.option_add("*tearOff", tk.FALSE)
 
@@ -515,9 +726,8 @@ class Gui:
             file_save_as_menu = tk.Menu()
             edit_menu = tk.Menu()
             debug_menu = tk.Menu()
-            edit_array_data_type = tk.Menu()
+            edit_format_version = tk.Menu()
             edit_compr_type_menu = tk.Menu()
-            edit_dct_block_size = tk.Menu()
 
             file_save_as_menu.add_command(label="Export as .GPIC", command=lambda: self.Gui.export_file(file_image))
             file_save_as_menu.add_command(label="Export as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
@@ -527,36 +737,24 @@ class Gui:
             edit_compr_type_menu.add_radiobutton(label="round Default", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=1)
             edit_compr_type_menu.add_radiobutton(label="round floor", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=0)
 
+            edit_format_version_var = tk.IntVar(value=2)
+            edit_format_version.add_radiobutton(label="2", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=edit_format_version_var, value=2)
+            edit_format_version.add_radiobutton(label="1", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=edit_format_version_var, value=1)
+            edit_format_version.add_radiobutton(label="0", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=edit_format_version_var, value=0)
+
             file_menu.add_command(label="New", command=Gui.re_create_window)
             file_menu.add_cascade(label="Export", menu=file_save_as_menu)
             file_menu.add_separator()
             file_menu.add_command(label="Exit", command=sys.exit)
 
             edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
-            #edit_menu.add_cascade(label="Array data type", menu=edit_array_data_type)
-            #edit_menu.add_cascade(label="DCT block size", menu=edit_dct_block_size)
+            edit_menu.add_cascade(label="Format version", menu=edit_format_version)
 
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
             debug_menu.add_command(label="show_image_now", command=self.Gui.Debug.show_image)
             debug_menu.add_command(label="show_image_compress_off", command=self.Gui.Debug.show_image_virgin)
             debug_menu.add_command(label="show_original_image", command=self.Gui.Debug.show_original)
             debug_menu.add_checkbutton(label="export_logs", command=lambda: self.Gui.Debug.export_logs())
-
-            edit_array_data_type_var = tk.IntVar(value=0)
-            edit_array_data_type.add_radiobutton(label="uint8", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=0)
-            edit_array_data_type.add_separator()
-            edit_array_data_type.add_radiobutton(label="int16", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=1)
-            edit_array_data_type.add_radiobutton(label="int32", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=2)
-            edit_array_data_type.add_separator()
-            edit_array_data_type.add_radiobutton(label="float16", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=3)
-            edit_array_data_type.add_radiobutton(label="float32", command=lambda: self.Gui.On_triggers.on_edit_array_data_type(), variable=edit_array_data_type_var, value=4)
-
-            edit_dct_block_size_var = tk.IntVar(value=8)
-            edit_dct_block_size.add_radiobutton(label="2", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=2)
-            edit_dct_block_size.add_radiobutton(label="4", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=4)
-            edit_dct_block_size.add_radiobutton(label="8", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=8)
-            edit_dct_block_size.add_radiobutton(label="16", command=lambda: self.Gui.On_triggers.on_edit_dct_block_size(), variable=edit_dct_block_size_var, value=16)
-
 
             menu.add_cascade(label="File", menu=file_menu)
             menu.add_cascade(label="Edit", menu=edit_menu)
@@ -634,19 +832,38 @@ class Gui:
                                               work_with_gppic.compression_quant_force,
                                               work_with_gppic.compression_type,
                                               work_with_gppic.array_data_type,
-                                              work_with_gppic.dct_blocksize
+                                              work_with_gppic.dct_blocksize,
+                                              work_with_gppic.brightnes,
+                                              work_with_gppic.sharpness,
+                                              work_with_gppic.format_version
                                               )
 
-        # edits quantization CUMpression value in Work_with_gppic class
+
         @staticmethod
-        def on_quantization_slider_compression(value) -> None:
+        def on_bright_slider(value) -> None:
             global work_with_gppic
             work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force,
-                                              int(value), work_with_gppic.compression_type,
+                                              work_with_gppic.compression_quant_force,
+                                              work_with_gppic.compression_type,
                                               work_with_gppic.array_data_type,
-                                              work_with_gppic.dct_blocksize
+                                              work_with_gppic.dct_blocksize,
+                                              int(value),
+                                              work_with_gppic.sharpness,
+                                              work_with_gppic.format_version
                                               )
 
+        @staticmethod
+        def on_sharp_slider(value) -> None:
+            global work_with_gppic
+            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force,
+                                              work_with_gppic.compression_quant_force,
+                                              work_with_gppic.compression_type,
+                                              work_with_gppic.array_data_type,
+                                              work_with_gppic.dct_blocksize,
+                                              work_with_gppic.brightnes,
+                                              int(value),
+                                              work_with_gppic.format_version
+                                              )
 
         @staticmethod
         def on_edit_compression_type() -> None:
@@ -656,36 +873,29 @@ class Gui:
                 work_with_gppic.compression_quant_force,
                 edit_compr_type_menu_var.get(),
                 work_with_gppic.array_data_type,
-                work_with_gppic.dct_blocksize
+                work_with_gppic.dct_blocksize,
+                work_with_gppic.brightnes,
+                work_with_gppic.sharpness,
+                work_with_gppic.format_version
 
             )
             logger.debug(f"Compression type has been edited to {edit_compr_type_menu_var.get()}")
 
         @staticmethod
-        def on_edit_array_data_type() -> None:
-            global work_with_gppic
-            work_with_gppic = Work_with_gppic(
-                work_with_gppic.compression_dct_force,
-                work_with_gppic.compression_quant_force,
-                work_with_gppic.compression_type,
-                edit_array_data_type_var.get(),
-                work_with_gppic.dct_blocksize
-
-            )
-            logger.debug(f"Array data type has been edited to {edit_array_data_type_var.get()}")
-
-        @staticmethod
-        def on_edit_dct_block_size() -> None:
+        def on_edit_format_version() -> None:
             global work_with_gppic
             work_with_gppic = Work_with_gppic(
                 work_with_gppic.compression_dct_force,
                 work_with_gppic.compression_quant_force,
                 work_with_gppic.compression_type,
                 work_with_gppic.array_data_type,
-                edit_dct_block_size_var.get()
+                work_with_gppic.dct_blocksize,
+                work_with_gppic.brightnes,
+                work_with_gppic.sharpness,
+                edit_format_version_var.get()
 
             )
-            logger.debug(f"DCT block size has been edited to {edit_dct_block_size_var.get()}")
+            logger.debug(f"Format version has been edited to {edit_format_version_var.get()}")
 
 
     class Debug:
@@ -712,7 +922,8 @@ class Gui:
                                                      f"\ndct_blocksize : {dct_blocksize}"
                                                      f"\n\nuncompressed (by DCT & quantization) bytes size:  {size_img_uncompress_DCT}"
                                                      f"\nuncompressed (by Lzma) bytes size:  {size_img_uncompress}"f""
-                                                     f"\nnow bytes size : {size_img} ± 5Kb")
+                                                     f"\nnow bytes size : {size_img} ± 5Kb"
+                                                     f"\n\nformat_version: {image_format_version}")
 
         @staticmethod
         def show_image():

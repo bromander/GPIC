@@ -82,6 +82,7 @@ class Work_gpic:
         global gui
         data = file_obj.read()
         offset = 5  # skip the first 5 bytes
+        image_format_version = 2
         width = height = None
         pixels = None
 
@@ -92,9 +93,11 @@ class Work_gpic:
             offset += 1
 
             if chunk_type == b'O':
-                # читаем два uint32 BE
                 if offset + 8 > len(data):
                     raise ValueError("Not enough data for the image size")
+                image_format_version = struct.unpack('>f', data[offset:offset + 4])[0]
+                logger.info(f"Format version: {image_format_version}")
+                offset += 4
                 width, height = struct.unpack('>II', data[offset:offset + 8])
                 offset += 8
                 (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
@@ -107,25 +110,44 @@ class Work_gpic:
                     raise ValueError("Insufficient data for the length of the compressed block")
                 if offset + comp_len > len(data):
                     raise ValueError("Not enough data for a compressed block")
-                comp_data = data[offset:offset + comp_len]
-                offset += comp_len
 
-                raw = lzma.decompress(comp_data)
+                if image_format_version == 2:
+                    comp_data = data[offset:offset + comp_len]
+                    offset += comp_len
 
-                # интерпретируем как int32, а не uint8
-                inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
+                    raw = lzma.decompress(comp_data)
 
-                # разбиваем на блоки и применяем IDCT
-                blocks2, _ = self._blockify(inv)
-                for i in range(blocks2.shape[0]):
-                    for j in range(blocks2.shape[1]):
-                        blocks2[i, j] = self._idct2(blocks2[i, j])
+                    inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
 
-                restored = self._unblockify(blocks2, (height, width))
-                restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+                    blocks2, _ = self._blockify(inv)
+                    for i in range(blocks2.shape[0]):
+                        for j in range(blocks2.shape[1]):
+                            blocks2[i, j] = self._idct2(blocks2[i, j])
 
-                # теперь у тебя готовая "картинка"
-                pixels = numpy.stack([restored, restored, restored], axis=-1)
+                    restored = self._unblockify(blocks2, (height, width))
+                    restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([restored, restored, restored], axis=-1)
+
+                elif image_format_version == 1:
+                    comp_data = data[offset:offset + comp_len]
+                    offset += comp_len
+
+                    raw = lzma.decompress(comp_data)
+
+                    raw = numpy.frombuffer(raw).reshape((height, width))
+                    raw = numpy.clip(numpy.rint(raw), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([raw, raw, raw], axis=-1)
+
+                elif image_format_version == 0:
+                    raw = data[offset:offset + comp_len]
+                    offset += comp_len
+
+                    raw = numpy.frombuffer(raw).reshape((height, width))
+                    raw = numpy.clip(numpy.rint(raw), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([raw, raw, raw], axis=-1)
 
             elif chunk_type == b"T":
                 title = data[offset:offset + 4]
