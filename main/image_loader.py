@@ -95,7 +95,7 @@ class Work_gpic:
             if chunk_type == b'O':
                 if offset + 8 > len(data):
                     raise ValueError("Not enough data for the image size")
-                image_format_version = struct.unpack('>f', data[offset:offset + 4])[0]
+                image_format_version = struct.unpack('>I', data[offset:offset + 4])[0]
                 logger.info(f"Format version: {image_format_version}")
                 offset += 4
                 width, height = struct.unpack('>II', data[offset:offset + 8])

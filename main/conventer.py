@@ -19,52 +19,12 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
-VERSION = "1.5"
+VERSION = "1.5.1"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole --collect-all scipy conventer.py
 # pyinstaller --onefile --add-data "GPIC_logo.ico;." --icon=GPIC_logo.ico --noconsole --collect-all scipy image_loader.py
 
-#handler that creates small loading window
-def loading_screen(func):
-    '''
-    creates mini-window - loading screen
-    '''
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        def disable_close(): pass
-
-        loading_win = tk.Toplevel(root)
-        loading_win.iconbitmap(resource_path("GPIC_logo.ico"))
-        loading_win.title("Loading...")
-        loading_win.transient(root)
-        loading_win.grab_set()
-        loading_win.protocol("WM_DELETE_WINDOW", disable_close)
-
-        loading_win.geometry("200x100+{}+{}".format(
-            (loading_win.winfo_screenwidth() - 200) // 2,
-            (loading_win.winfo_screenheight() - 100) // 2
-        ))
-
-        tk.Label(loading_win, text="Loading...").pack(anchor="n", pady=10)
-        pb = ttk.Progressbar(loading_win, mode="indeterminate")
-        pb.pack(expand=True, fill="x", padx=20, pady=20)
-        pb.start(2) #makes the progressbar always move
-
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func, *args, **kwargs)
-
-            def check():
-                if future.done():
-                    loading_win.destroy()
-                else:
-                    loading_win.after(50, check)
-
-            loading_win.after(50, check)
-            root.wait_window(loading_win)
-            return future.result()
-
-    return wrapper
 
 def catch_errors(func):
     '''
@@ -117,6 +77,11 @@ class Work_with_gppic:
                         ])
         self.sharpness = sharpness
         self.format_version = format_version
+
+        self.size_img = 0
+        self.size_img_uncompress = 0
+        self.size_img_uncompress_DCT = 0
+        self.RMSE = 0
 
     class Work_DCT:
         @staticmethod
@@ -220,7 +185,11 @@ class Work_with_gppic:
         return data
 
     @staticmethod
-    def _down(data: numpy.ndarray):
+    def _down(data: numpy.ndarray) -> numpy.ndarray:
+        """
+        Shifts pixels
+        :param data: array of pixels
+        """
         mask = data != 0
         if min(data[mask]) > 0:
             if min(data[mask]) > 5:
@@ -229,7 +198,10 @@ class Work_with_gppic:
                 data[mask] -= min(data[mask])
         return data
 
-    def _dtype(self):
+    def _dtype(self) -> None:
+        """
+        :return: numpy data type
+        """
         if self.array_data_type == 0:
             return numpy.uint8
         elif self.array_data_type == 1:
@@ -241,7 +213,12 @@ class Work_with_gppic:
         elif self.array_data_type == 4:
             return numpy.float32
 
-    def _sharpen(self, img, alpha, sigma=1.0):
+    def _sharpen(self, img: numpy.ndarray, alpha:float, sigma:float=1.0) -> numpy.ndarray:
+        """
+        appends sharpness to array of pixels
+        :param img: array of pixels
+        :param sigma: force of sharpness
+        """
         blurred = scipy.ndimage.gaussian_filter(img, sigma=sigma)
 
         details = img.astype(float) - blurred.astype(float)
@@ -258,28 +235,26 @@ class Work_with_gppic:
         :param pixel_matrix: convents a pixel matrix into an array of pixels in GPIC format
         :return: buffered image data
         '''
-        global size_img, size_img_uncompress, size_img_uncompress_DCT, RMSE
+
+        height = len(pixel_matrix)
+        width = len(pixel_matrix[0]) if height else 0
+        buf = io.BytesIO()
+
+        logger.debug("Using greyscale...")
+        logger.debug(f"Array type: {self._dtype()}")
+        pixels = numpy.array(pixel_matrix, dtype=self._dtype())
+        gray = (0.299 * pixels[..., 0] +
+                0.587 * pixels[..., 1] +
+                0.114 * pixels[..., 2])
+
+        # Visual effects
+        gray += self.brightnes  # editing brightness
+        gray = self._sharpen(gray, self.sharpness / 10)  # editing sharpness
+        gray = self._down(gray)
+
+        self.size_img_uncompress_DCT = len(gray.tobytes())
 
         if self.format_version == 2:
-
-            height = len(pixel_matrix)
-            width = len(pixel_matrix[0]) if height else 0
-            buf = io.BytesIO()
-
-            logger.debug("Using greyscale...")
-            logger.debug(f"Array type: {self._dtype()}")
-            pixels = numpy.array(pixel_matrix, dtype=self._dtype())
-            gray = (0.299 * pixels[..., 0] +
-                    0.587 * pixels[..., 1] +
-                    0.114 * pixels[..., 2])
-
-            #Visual effects
-            gray += self.brightnes #editing brightness
-            gray = self._sharpen(gray, self.sharpness/10) #editing sharpness
-
-            gray = self._down(gray)
-
-            size_img_uncompress_DCT = len(gray.tobytes())
 
             logger.debug("Using DCT cumPression...")
             logger.debug(f"DCT block size: {self.dct_blocksize}")
@@ -296,129 +271,95 @@ class Work_with_gppic:
 
             restored = self._down(restored)
 
-            size_img_uncompress = len(restored.tobytes())
+            self.size_img_uncompress = len(restored.tobytes())
 
             logger.debug("Using lzma compression...")
 
             compressed = lzma.compress(restored.tobytes(), preset=9)
 
-            size_img = len(compressed)
+            self.size_img = len(compressed)
 
             # Write sizes and data
             # Header: signature + dimensions
             buf.write(b"\x89GPC\n")  # CSIGN
             buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>f', self.format_version)) #version
+            buf.write(struct.pack('>I', 2)) #version
             buf.write(struct.pack('>I', width))
             buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', size_img))
+            buf.write(struct.pack('>I', self.size_img))
             buf.write(b"A")  # CPIX
             buf.write(compressed)
             buf.write(b"TIMAG") # CTXT
             buf.write(b"E") # CEND
             buf.seek(0)
 
-            RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
-            logger.debug(f"RMSE: {RMSE}")
+            self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
+            logger.debug(f"RMSE: {self.RMSE}")
 
-            logger.debug(f"file size: {size_img}bytes")
+            logger.debug(f"file size: {self.size_img}bytes")
             del compressed, restored, gray, pixels
             return buf
 
         elif self.format_version == 1:
+            gray_a = gray.copy()
 
-            height = len(pixel_matrix)
-            width = len(pixel_matrix[0]) if height else 0
-            buf = io.BytesIO()
-
-            logger.debug("Using greyscale...")
-            logger.debug(f"Array type: {self._dtype()}")
-            pixels = numpy.array(pixel_matrix, dtype=self._dtype())
-            gray_new = (0.299 * pixels[..., 0] +
-                    0.587 * pixels[..., 1] +
-                    0.114 * pixels[..., 2])
-
-            #Visual effects
-            gray_new += self.brightnes #editing brightness
-            gray_new = self._sharpen(gray_new, self.sharpness/10) #editing sharpness
-
-            gray = self._down(gray_new)
-
-            size_img_uncompress_DCT = len(gray.tobytes())
-
-            size_img_uncompress = len(gray.tobytes())
+            self.size_img_uncompress = len(gray_a.tobytes())
 
             logger.debug("Using lzma compression...")
-            compressed = lzma.compress(gray.tobytes(), preset=9)
+            compressed = lzma.compress(gray_a.tobytes(), preset=9)
 
-            size_img = len(compressed)
+            self.size_img = len(compressed)
 
             # Write sizes and data
             # Header: signature + dimensions
             buf.write(b"\x89GPC\n")  # CSIGN
             buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>f', self.format_version)) #version
+            buf.write(struct.pack('>I', 1)) #version
             buf.write(struct.pack('>I', width))
             buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', size_img))
+            buf.write(struct.pack('>I', self.size_img))
             buf.write(b"A")  # CPIX
             buf.write(compressed)
             buf.write(b"TIMAG") # CTXT
             buf.write(b"E") # CEND
             buf.seek(0)
 
-            RMSE = numpy.mean((gray - gray_new) ** 2)
-            logger.debug(f"RMSE: {RMSE}")
+            self.RMSE = numpy.mean((gray - gray_a) ** 2)
+            logger.debug(f"RMSE: {self.RMSE}")
 
-            logger.debug(f"file size: {size_img}bytes")
+            logger.debug(f"file size: {self.size_img}bytes")
             del gray, pixels
             return buf
 
         elif self.format_version == 0:
 
-            height = len(pixel_matrix)
-            width = len(pixel_matrix[0]) if height else 0
-            buf = io.BytesIO()
+            self.size_img_uncompress = len(gray.tobytes())
 
-            logger.debug("Using greyscale...")
-            logger.debug(f"Array type: {self._dtype()}")
-            pixels = numpy.array(pixel_matrix, dtype=self._dtype())
-            gray = (0.299 * pixels[..., 0] +
-                    0.587 * pixels[..., 1] +
-                    0.114 * pixels[..., 2])
-
-            #Visual effects
-            gray += self.brightnes #editing brightness
-            gray = self._sharpen(gray, self.sharpness/10) #editing sharpness
-
-            gray = self._down(gray)
-
-            size_img_uncompress_DCT = len(gray.tobytes())
-
-            size_img_uncompress = len(gray.tobytes())
-
-            size_img = len(gray.tobytes())
+            self.size_img = len(gray.tobytes())
 
             # Write sizes and data
             # Header: signature + dimensions
             buf.write(b"\x89GPC\n")  # CSIGN
             buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>f', self.format_version)) #version
+            buf.write(struct.pack('>I', 0)) #version
             buf.write(struct.pack('>I', width))
             buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', size_img))
+            buf.write(struct.pack('>I', self.size_img))
             buf.write(b"A")  # CPIX
             buf.write(gray.tobytes())
             buf.write(b"TIMAG") # CTXT
             buf.write(b"E") # CEND
             buf.seek(0)
 
-            RMSE = 0
-            logger.debug(f"RMSE: {RMSE}")
+            self.RMSE = 0
+            logger.debug(f"RMSE: {self.RMSE}")
 
-            logger.debug(f"file size: {size_img}bytes")
+            logger.debug(f"file size: {self.size_img}bytes")
             del gray, pixels
             return buf
+
+        else:
+            raise ValueError("File format not found")
 
     @catch_errors
     def open_image(self, file_obj: BinaryIO) -> Image.Image:
@@ -427,7 +368,6 @@ class Work_with_gppic:
         :param file_obj: buffered gpic image data
         :return: pillow Image.image object
         '''
-        global gui, image_format_version
         data = file_obj.read()
         offset = 5  # skip the first 5 bytes
         comp_len = 0
@@ -440,12 +380,11 @@ class Work_with_gppic:
             chunk_type = data[offset:offset + 1]
             offset += 1
 
-
             if chunk_type == b'O':
                 # читаем два uint32 BE
                 if offset + 16 > len(data):
                     raise ValueError("Not enough data for the image size")
-                image_format_version = struct.unpack('>f', data[offset:offset + 4])[0]
+                image_format_version = struct.unpack('>I', data[offset:offset + 4])[0]
                 logger.info(f"Format version: {image_format_version}")
                 offset += 4
                 width, height = struct.unpack('>II', data[offset:offset + 8])
@@ -453,6 +392,8 @@ class Work_with_gppic:
                 (comp_len,) = struct.unpack('>I', data[offset:offset + 4])
                 offset += 4
 
+                if image_format_version == (0 or 1):
+                    gui.Create_widgets.Disable_wigets.toggle_dct_compression_slider(False)
 
             elif chunk_type == b'A':
                 if width is None or height is None:
@@ -507,10 +448,13 @@ class Work_with_gppic:
 
                     pixels = numpy.stack([raw, raw, raw], axis=-1) #creating image
 
+                else:
+                    raise ValueError("File format not found")
+
             elif chunk_type == b"T":
                 title = data[offset:offset + 4]
                 offset += 4
-                root.title(f"Gpic converter | {IMAGE_FORMAT} | {width} X {height} | {title.decode('utf-8')}")
+                gui.root.title(f"Gpic converter | {IMAGE_FORMAT} | {width} X {height} | {title.decode('utf-8')}")
                 logger.debug(f"Image type: {title.decode('utf-8')}")
 
             elif chunk_type == b'E':
@@ -537,28 +481,30 @@ class Gui:
         self.On_triggers = self.On_triggers(self)
         self.Debug = self.Debug(self)
 
+        self.size_img = 0
+
+        self.root: Optional[tk.Tk] = None
+
     #creates main root window
     def create_window(self) -> None:
         '''
         creates main window
         '''
-        global root
-
         root = tk.Tk()
         root.iconbitmap(resource_path("GPIC_logo.ico"))
         root.title("Gpic converter | loading...")
         root.geometry("1000x800")
         root.resizable(False, False)
 
-
-        #creating buttons
+        #creating button
         btn_view = tk.Button(text="Update Image", command=self.On_triggers.on_button_view_update_image)
         btn_view.pack(anchor="nw")
         btn_view.place(x=15, y=15)
+        self.root = root
 
-    @staticmethod
-    def re_create_window() -> None:
-        root.destroy()
+
+    def re_create_window(self) -> None:
+        self.root.destroy()
         main()
 
 
@@ -566,30 +512,105 @@ class Gui:
 
         def __init__(self, gui_instance):
             self.Gui = gui_instance
+            self.Disable_wigets = self.Disable_wigets(self)
 
-        def create_main_widgets(self, image):
-            self._create_menu()
-            self._create_version_label()
-            self._create_image_viewer(image)
-            self._create_image_brightness_slider()
-            self._create_image_sharpness_slider()
-            self._create_dct_compression_slider()
-            self._create_size_looker_label()
+            self.dct_compression_slider: Optional[tk.Scale] = None
+            self.image_label: Optional[tk.Label] = None
+            self.size_looker_label: Optional[tk.Label] = None
+            self.slider_brightness: Optional[tk.Scale] = None
+            self.slider_sharpness: Optional[tk.Scale] = None
+            self.slider_compression: Optional[tk.Scale] = None
+            self.image_viewer_frame: Optional[tk.Frame] = None
+            self.version_label: Optional[tk.Label] = None
+            self.loading_label: Optional[tk.Label] = None
+            self.loading_viewer_frame: Optional[tk.Frame] = None
+
+            self.edit_compr_type_menu_var: Optional[tk.IntVar] = None
+            self.edit_format_version_var: Optional[tk.IntVar] = None
+
+        def create_main_widgets(self, image=None):
+            """
+            Creates main widgets
+            """
+            if image is None:
+                self._create_version_label()
+                self._create_menu()
+                self._create_image_brightness_slider()
+                self._create_image_sharpness_slider()
+                self._create_dct_compression_slider()
+                self._create_size_looker_label()
+                self._create_loading_label("Waiting...")
+            else:
+                self.loading_label.destroy()
+                self.loading_viewer_frame.destroy()
+
+                self.Gui.Create_widgets.size_looker_label.destroy()
+                self._create_image_viewer(image)
+                self._create_size_looker_label()
+
+
+        def _create_loading_label(self, text) -> None:
+            """
+            Creates loading screen on center of window
+            :param text: Text
+            """
+
+            # If user presses "Update Image" button
+            if path is not None:
+                image = Image.open(path).convert("L").convert("RGBA")
+                overlay = Image.new("RGBA", image.size, (0, 0, 0, 125)) #creating new inage-overlay for shade
+                image = Image.alpha_composite(image, overlay)
+                image.thumbnail((550, 550), Image.Resampling.LANCZOS)
+
+                image = ImageTk.PhotoImage(image)
+
+                loading_viewer_frame = tk.Frame(self.Gui.root, bg="white", bd=5, relief=tk.GROOVE)
+                loading_viewer_frame.pack(anchor="center", pady=100)
+                loading_viewer_frame.configure(width=530, height=530)
+                loading_viewer_frame.pack_propagate(False)
+
+                loading_label = tk.Label(loading_viewer_frame, image=image, bg="white", text=text, font=("Arial", 60), compound="center", fg="white")
+                loading_label.image = image
+                loading_label.pack(anchor="center", ipady=200)
+
+                self.loading_label = loading_viewer_frame
+                self.loading_viewer_frame = loading_label
+
+            # if the user uploaded the image for the first time
+            else:
+
+                loading_viewer_frame = tk.Frame(self.Gui.root, bg="white", bd=5, relief=tk.GROOVE)
+                loading_viewer_frame.pack(anchor="center", pady=100)
+                loading_viewer_frame.configure(width=530, height=530)
+                loading_viewer_frame.pack_propagate(False)
+
+                loading_label = tk.Label(loading_viewer_frame, text=text, bg="white", font=("Arial", 60))
+                loading_label.pack(anchor="center", ipady=200)
+                self.loading_label = loading_label
+                self.loading_viewer_frame = loading_viewer_frame
 
         # creates text label with data of image sizes
         def _create_size_looker_label(self) -> None:
-            global size_looker_label
+            if path is not None:
+                size = self.Gui.format_size(os.path.getsize(path))
+            else:
+                size = self.Gui.format_size(os.path.getsize(0))
 
-            size_looker_label = tk.Label(root,
-                                         text=f"Original image size: {self.Gui.format_size(os.path.getsize(path))}\n"
-                                              f"Now file size: {self.Gui.format_size(size_img)} ± 5Kb\n"
-                                              f"RMSE: {round(RMSE, 2)}",
+            size_looker_label = tk.Label(self.Gui.root,
+                                         text=f"Original image size: {size}\n"
+                                              f"Now file size: {self.Gui.format_size(work_with_gppic.size_img)} ± 5Kb\n"
+                                              f"RMSE: {round(work_with_gppic.RMSE, 2)}",
                                          font=("Arial", 10))
             size_looker_label.pack(anchor="sw")
+            size_looker_label.place(y=720, x=5)
+            self.size_looker_label = size_looker_label
 
         #create slider for DCT compression
         def _create_dct_compression_slider(self) -> None:
-            compression_frame = tk.Frame(root, bg="#FFADB0", bd=5, relief=tk.GROOVE)
+            """
+            Creates slider for compression
+            """
+            compression_frame = tk.Frame(self.Gui.root, bg="#FFADB0", bd=5, relief=tk.GROOVE)
             compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
             compression_frame.place(x=10, y=60, width=110, height=460)
 
@@ -612,10 +633,15 @@ class Gui:
 
             slider_compression.pack()
             slider_compression.place(height=390, y=45, x=25)
-            slider_compression.set(10)
+            slider_compression.set(work_with_gppic.compression_dct_force)
+
+            self.dct_compression_slider = slider_compression
 
         def _create_image_brightness_slider(self) -> None:
-            brightness_frame = tk.Frame(root, bg="#AFEEEE", bd=5, relief=tk.GROOVE)
+            """
+            Creates slider for brightness
+            """
+            brightness_frame = tk.Frame(self.Gui.root, bg="#AFEEEE", bd=5, relief=tk.GROOVE)
             brightness_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
             brightness_frame.place(x=880, y=60, width=110, height=320)
 
@@ -640,8 +666,13 @@ class Gui:
             slider_brightness.place(height=270, y=30, x=25)
             slider_brightness.set(0)
 
+            self.slider_brightness = slider_brightness
+
         def _create_image_sharpness_slider(self) -> None:
-            sharpness_frame = tk.Frame(root, bg="#C0C0C0", bd=5, relief=tk.GROOVE)
+            """
+            Creates slider for sharpness
+            """
+            sharpness_frame = tk.Frame(self.Gui.root, bg="#C0C0C0", bd=5, relief=tk.GROOVE)
             sharpness_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
             sharpness_frame.place(x=880, y=400, width=110, height=320)
 
@@ -666,40 +697,15 @@ class Gui:
             slider_sharpness.place(height=270, y=30, x=25)
             slider_sharpness.set(0)
 
-        #create slider for quantization compression
-        def _create_quantization_compression_slider(self) -> None:
-                compression_frame = tk.Frame(root, bg="lightblue", bd=5, relief=tk.GROOVE)
-                compression_frame.pack(anchor="nw", fill=tk.NONE, expand=False)
-                compression_frame.place(x=10, y=395, width=110, height=320)
+            self.slider_sharpness = slider_sharpness
 
-                slider_compression_label = tk.Label(compression_frame, text="quantization\ncompression", font=("Arial", 12),
-                                                    bg="lightblue")
-
-                slider_compression_label.pack(anchor="center")
-                slider_compression_label.place(x=1)
-
-                slider_compression = tk.Scale(
-                    compression_frame,
-                    bg="lightblue",
-                    bd=3,
-                    from_=1,
-                    to=120,
-                    orient=tk.VERTICAL,
-                    length=300,
-                    command=self.Gui.On_triggers.on_quantization_slider_compression,
-                )
-
-                slider_compression.pack()
-                slider_compression.place(height=250, y=45, x=25)
-
-        #creates image preview window
-        @staticmethod
-        def _create_image_viewer(image) -> None:
-            global image_label
-            global image_viewer_frame
+        def _create_image_viewer(self, image) -> None:
+            """
+            creates image preview window
+            """
 
             #creating frame of preview window
-            image_viewer_frame = tk.Frame(root, bg="white", bd=5, relief=tk.GROOVE)
+            image_viewer_frame = tk.Frame(self.Gui.root, bg="white", bd=5, relief=tk.GROOVE)
             image_viewer_frame.pack(anchor="center", pady=100)
             image_viewer_frame.configure(width=530, height=530)
             image_viewer_frame.pack_propagate(False)
@@ -713,14 +719,17 @@ class Gui:
             image_label.image = image_
             image_label.pack(anchor="center", ipady=200)
 
-        def _create_version_label(self):
-            version_label = tk.Label(root, text=f"GPIC Conventer V{VERSION} ", font=("Arial", 10))
+            self.image_viewer_frame = image_viewer_frame
+            self.image_label = image_label
+
+        def _create_version_label(self) -> None:
+            version_label = tk.Label(self.Gui.root, text=f"GPIC Conventer V{VERSION} ", font=("Arial", 10))
             version_label.pack(anchor="se")
+            self.version_label = version_label
 
         def _create_menu(self) -> None:
-            global edit_compr_type_menu_var, edit_array_data_type_var, edit_dct_block_size_var, show_console_var, edit_format_version_var
-            menu = tk.Menu(root)
-            root.option_add("*tearOff", tk.FALSE)
+            menu = tk.Menu(self.Gui.root)
+            self.Gui.root.option_add("*tearOff", tk.FALSE)
 
             file_menu = tk.Menu()
             file_save_as_menu = tk.Menu()
@@ -732,17 +741,17 @@ class Gui:
             file_save_as_menu.add_command(label="Export as .GPIC", command=lambda: self.Gui.export_file(file_image))
             file_save_as_menu.add_command(label="Export as .PNG", command=lambda: self.Gui.export_file_as_png(file_image))
 
-            edit_compr_type_menu_var = tk.IntVar(value=1)
-            edit_compr_type_menu.add_radiobutton(label="round ceil", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=2)
-            edit_compr_type_menu.add_radiobutton(label="round Default", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=1)
-            edit_compr_type_menu.add_radiobutton(label="round floor", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=edit_compr_type_menu_var, value=0)
+            self.edit_compr_type_menu_var = tk.IntVar(value=1)
+            edit_compr_type_menu.add_radiobutton(label="round ceil", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=self.edit_compr_type_menu_var, value=2)
+            edit_compr_type_menu.add_radiobutton(label="round Default", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=self.edit_compr_type_menu_var, value=1)
+            edit_compr_type_menu.add_radiobutton(label="round floor", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=self.edit_compr_type_menu_var, value=0)
 
-            edit_format_version_var = tk.IntVar(value=2)
-            edit_format_version.add_radiobutton(label="2", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=edit_format_version_var, value=2)
-            edit_format_version.add_radiobutton(label="1", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=edit_format_version_var, value=1)
-            edit_format_version.add_radiobutton(label="0", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=edit_format_version_var, value=0)
+            self.edit_format_version_var = tk.IntVar(value=2)
+            edit_format_version.add_radiobutton(label="2", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=2)
+            edit_format_version.add_radiobutton(label="1", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=1)
+            edit_format_version.add_radiobutton(label="0", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=0)
 
-            file_menu.add_command(label="New", command=Gui.re_create_window)
+            file_menu.add_command(label="New", command=self.Gui.re_create_window)
             file_menu.add_cascade(label="Export", menu=file_save_as_menu)
             file_menu.add_separator()
             file_menu.add_command(label="Exit", command=sys.exit)
@@ -761,8 +770,20 @@ class Gui:
             menu.add_cascade(label="Debug", menu=debug_menu)
             menu.configure(activeborderwidth=5)
 
+            self.Gui.root.config(menu=menu)
 
-            root.config(menu=menu)
+        class Disable_wigets:
+
+            def __init__(self, Create_widgets):
+                self.Create_widgets = Create_widgets
+
+            def toggle_dct_compression_slider(self, state:bool):
+                scale = self.Create_widgets.dct_compression_slider
+
+                if not state:
+                    scale.config(state="disabled")
+                else:
+                    scale.config(state="normal")
 
 
     class Get_windows:
@@ -809,16 +830,26 @@ class Gui:
         # updates image in preview window
         def on_button_view_update_image(self) -> None:
             global file_image
+            logger.debug("\n")
 
-            print()
             # re-creating image with new settings
+            self.Gui.Create_widgets.dct_compression_slider.destroy()
+            self.Gui.Create_widgets._create_dct_compression_slider()
+            self.Gui.Create_widgets.image_label.destroy()
+            self.Gui.Create_widgets.image_viewer_frame.destroy()
+            self.Gui.Create_widgets.loading_viewer_frame.destroy()
+            self.Gui.Create_widgets.loading_label.destroy()
+
+            self.Gui.Create_widgets._create_loading_label("Loading...")
+            self.Gui.Create_widgets.loading_label.update()
+
             pixel_matrix = work_with_gppic.extract_pixels(path)
             file_image = work_with_gppic.convert_to_gpic(pixel_matrix)
             file = work_with_gppic.open_image(file_image)
-            image_label.destroy()
 
-            size_looker_label.destroy()
-            image_viewer_frame.destroy()
+            self.Gui.Create_widgets.size_looker_label.destroy()
+            self.Gui.Create_widgets.loading_viewer_frame.destroy()
+            self.Gui.Create_widgets.loading_label.destroy()
 
             self.Gui.Create_widgets._create_image_viewer(file)
             self.Gui.Create_widgets._create_size_looker_label()
@@ -827,75 +858,23 @@ class Gui:
         # edits DST CUMpression value in Work_with_gppic class
         @staticmethod
         def on_dct_slider_compression(value) -> None:
-            global work_with_gppic
-            work_with_gppic = Work_with_gppic(int(value),
-                                              work_with_gppic.compression_quant_force,
-                                              work_with_gppic.compression_type,
-                                              work_with_gppic.array_data_type,
-                                              work_with_gppic.dct_blocksize,
-                                              work_with_gppic.brightnes,
-                                              work_with_gppic.sharpness,
-                                              work_with_gppic.format_version
-                                              )
-
+            work_with_gppic.compression_dct_force = int(value)
 
         @staticmethod
         def on_bright_slider(value) -> None:
-            global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force,
-                                              work_with_gppic.compression_quant_force,
-                                              work_with_gppic.compression_type,
-                                              work_with_gppic.array_data_type,
-                                              work_with_gppic.dct_blocksize,
-                                              int(value),
-                                              work_with_gppic.sharpness,
-                                              work_with_gppic.format_version
-                                              )
+            work_with_gppic.brightnes = int(value)
 
         @staticmethod
         def on_sharp_slider(value) -> None:
-            global work_with_gppic
-            work_with_gppic = Work_with_gppic(work_with_gppic.compression_dct_force,
-                                              work_with_gppic.compression_quant_force,
-                                              work_with_gppic.compression_type,
-                                              work_with_gppic.array_data_type,
-                                              work_with_gppic.dct_blocksize,
-                                              work_with_gppic.brightnes,
-                                              int(value),
-                                              work_with_gppic.format_version
-                                              )
+            work_with_gppic.sharpness = int(value)
 
-        @staticmethod
-        def on_edit_compression_type() -> None:
-            global work_with_gppic
-            work_with_gppic = Work_with_gppic(
-                work_with_gppic.compression_dct_force,
-                work_with_gppic.compression_quant_force,
-                edit_compr_type_menu_var.get(),
-                work_with_gppic.array_data_type,
-                work_with_gppic.dct_blocksize,
-                work_with_gppic.brightnes,
-                work_with_gppic.sharpness,
-                work_with_gppic.format_version
+        def on_edit_compression_type(self) -> None:
+            work_with_gppic.compression_type = self.Gui.Create_widgets.edit_compr_type_menu_var.get()
+            logger.debug(f"Compression type has been edited to {self.Gui.Create_widgets.edit_compr_type_menu_var.get()}")
 
-            )
-            logger.debug(f"Compression type has been edited to {edit_compr_type_menu_var.get()}")
-
-        @staticmethod
-        def on_edit_format_version() -> None:
-            global work_with_gppic
-            work_with_gppic = Work_with_gppic(
-                work_with_gppic.compression_dct_force,
-                work_with_gppic.compression_quant_force,
-                work_with_gppic.compression_type,
-                work_with_gppic.array_data_type,
-                work_with_gppic.dct_blocksize,
-                work_with_gppic.brightnes,
-                work_with_gppic.sharpness,
-                edit_format_version_var.get()
-
-            )
-            logger.debug(f"Format version has been edited to {edit_format_version_var.get()}")
+        def on_edit_format_version(self) -> None:
+            work_with_gppic.format_version = self.Gui.Create_widgets.edit_format_version_var.get()
+            logger.debug(f"Format version has been edited to {self.Gui.Create_widgets.edit_format_version_var.get()}")
 
 
     class Debug:
@@ -918,12 +897,12 @@ class Gui:
             showinfo(title="get_image_data", message=f"dct_compression_forse : {dct_compression_forse_data}"
                                                      f"\nquantization_compression_forse_data : {quantization_compression_forse_data}"
                                                      f"\ncompression_type : {compression_type_data}"
-                                                     f"\nRMSE : {round(RMSE, 6)}"
+                                                     f"\nRMSE : {round(work_with_gppic.RMSE, 6)}"
                                                      f"\ndct_blocksize : {dct_blocksize}"
-                                                     f"\n\nuncompressed (by DCT & quantization) bytes size:  {size_img_uncompress_DCT}"
-                                                     f"\nuncompressed (by Lzma) bytes size:  {size_img_uncompress}"f""
-                                                     f"\nnow bytes size : {size_img} ± 5Kb"
-                                                     f"\n\nformat_version: {image_format_version}")
+                                                     f"\n\nuncompressed (by DCT & quantization) bytes size:  {work_with_gppic.size_img_uncompress_DCT}"
+                                                     f"\nuncompressed (by Lzma) bytes size:  {work_with_gppic.size_img_uncompress}"f""
+                                                     f"\nnow bytes size : {work_with_gppic.size_img} ± 5Kb"
+                                                     f"\n\nformat_version: {work_with_gppic.format_version}")
 
         @staticmethod
         def show_image():
@@ -1024,7 +1003,6 @@ class Gui:
 #starts program
 @catch_errors
 def main():
-    global work_with_gppic
     global path
     global file_image
     global buffer_handler, log_buffer
@@ -1065,25 +1043,32 @@ def main():
 
     buffer_handler, log_buffer = create_logger()
 
-    gui = Gui()
-    gui.create_window()
-    work_with_gppic = Work_with_gppic()
+    path = None
 
-    path = gui.Get_windows.get_path([("Images", "*.png;*.jpg"), ("Txt files", "*.txt"), ("All files", "*.*")])
+    gui.create_window()
+    gui.Create_widgets.create_main_widgets() # creating main widgets
+
+    path = gui.Get_windows.get_path([("Images", "*.png;*.jpg"), ("Txt files", "*.txt"), ("All files", "*.*")]) # Requesting the path to the image from the user
 
 
     if path == "":
         sys.exit()
 
-    pixel_matrix = work_with_gppic.extract_pixels(path)
-    file_image = work_with_gppic.convert_to_gpic(pixel_matrix)
-    gui.Create_widgets.create_main_widgets(work_with_gppic.open_image(file_image))
+    gui.Create_widgets.loading_label.configure(text="loading...") # creating loading screen
+    gui.Create_widgets.loading_label.update() # we have to manually refresh the window because we havent started the main loop
+
+    pixel_matrix = work_with_gppic.extract_pixels(path) # getting pixels-matrix from image
+    file_image = work_with_gppic.convert_to_gpic(pixel_matrix) # getting image in GPIC format
+    gui.Create_widgets.create_main_widgets(work_with_gppic.open_image(file_image)) # creating other widgets
 
     logger.info("DONE")
-    root.mainloop()
+    gui.root.mainloop() # Starting main loop
 
 
 if __name__ == "__main__":
+    gui = Gui()
+    work_with_gppic = Work_with_gppic()
+
     logger = logging.getLogger("Logger")
     logger.setLevel(logging.DEBUG)
     #logging.disable(logging.CRITICAL)
