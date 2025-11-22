@@ -3,7 +3,10 @@
     &
     GPIC file-loader</h1>
   
-  [![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)](https://github.com/bromander/GPIC/blob/master/LICENSE)
+  [![License](https://img.shields.io/github/license/bromander/GPIC?style=for-the-badge)](https://github.com/bromander/GPIC/blob/master/LICENSE) ![Static Badge](https://img.shields.io/badge/Python-3.6%2B-orange?style=for-the-badge&logo=python&logoColor=white) <br>
+  ![GitHub last commit](https://img.shields.io/github/last-commit/bromander/GPIC?style=flat-square)
+
+
 </div>
 
 # Content
