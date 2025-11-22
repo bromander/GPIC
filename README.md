@@ -19,11 +19,11 @@
 ## Getting Started
 ### Releases Page
 
-You can download the latest and most up-to-date .exe version from the [Releases page](https://github.com/bromander/GPIC/releases/tag/release)
+You can download .exe version from the [Releases page](https://github.com/bromander/GPIC/releases/tag/release)
 
 ### Cloning the Repository
 
-To get the source code, run:
+To get the source code and latest version run:
 ```
 git clone https://github.com/bromander/GPIC.git
 ```
