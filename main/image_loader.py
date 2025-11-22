@@ -15,6 +15,7 @@ import coloredlogs
 import numpy as np
 import sys
 import traceback
+import brotli
 
 
 def resource_path(relative_path):
@@ -111,7 +112,25 @@ class Work_gpic:
                 if offset + comp_len > len(data):
                     raise ValueError("Not enough data for a compressed block")
 
-                if image_format_version == 2:
+                if image_format_version == 3:
+                    comp_data = data[offset:offset + comp_len]
+                    offset += comp_len
+
+                    raw = brotli.decompress(comp_data)
+
+                    inv = numpy.frombuffer(raw, dtype=numpy.float16).reshape((height, width))
+
+                    blocks2, _ = self._blockify(inv)
+                    for i in range(blocks2.shape[0]):
+                        for j in range(blocks2.shape[1]):
+                            blocks2[i, j] = self._idct2(blocks2[i, j])
+
+                    restored = self._unblockify(blocks2, (height, width))
+                    restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
+
+                    pixels = numpy.stack([restored, restored, restored], axis=-1)
+
+                elif image_format_version == 2:
                     comp_data = data[offset:offset + comp_len]
                     offset += comp_len
 
