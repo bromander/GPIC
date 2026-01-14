@@ -18,6 +18,7 @@
     - [Action Sequence](#action-sequence)
     - [Structure](#structure)
     - [Verion Control](#verion-control)
+- [DeepWiki](https://deepwiki.com/bromander/GPIC)
 
 ## Getting Started
 ### Releases Page
@@ -35,7 +36,7 @@ git clone https://github.com/bromander/GPIC.git
 ### Action Sequence
 Converting a .png (for example) to .gpic can be broken down into seven steps:
 1. Extract the pixel matrix from the original image
-2. Convert RGB values to greyscale using the formula: `0.299 * R + 0.587 * G + 0.114 * B`
+2. Convert RGB values to greyscale using the formula: `0.2126 * R + 0.7152 * G + 0.0722 * B`
 3. Apply the [Discrete Cosine Transform method](https://en.wikipedia.org/wiki/Discrete_cosine_transform) (DCT) to each block of the greyscale data
 4. Divide the matrix into blocks (by default 8×8 pixels)
 5. Apply [quantization method](https://en.wikipedia.org/wiki/Quantization_(image_processing)) to each block
