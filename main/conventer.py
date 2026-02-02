@@ -1,4 +1,6 @@
 import time
+from difflib import restore
+
 from PIL import Image, ImageTk, ImageOps
 import numpy
 from tkinter import filedialog
@@ -18,7 +20,11 @@ import traceback
 import brotli
 import toml
 
-VERSION = "1.6.0"
+logger = logging.getLogger("Logger")
+logger.setLevel(logging.DEBUG)
+#logging.disable(logging.CRITICAL)
+
+VERSION = "1.6.1"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "main/GPIC_logo.ico;." --icon=main/GPIC_logo.ico --noconsole --collect-all scipy main/conventer.py
@@ -47,18 +53,15 @@ def resource_path(relative_path):
 
 
 class Work_with_gppic:
-
     def __init__(self, compression_dct_force: int = 10,
-                 compression_quant_force: int = 1,
-                 compression_type: int = 1,
+                 compression_type: Optional[int] = None, # 0=floor,1=round,2=ceil
                  array_data_type: int = 0,
                  dct_blocksize: int = 8,
                  brightnes: int = 0,
                  sharpness: int = 0,
-                 format_version: int = 2):
+                 format_version: Optional[int] = None):
         '''
         :param compression_dct_force: compression force during DCT compression
-        :param compression_quant_force: compression force during quantization compression
         :param compression_type: if == 1: rounds the value, if == 2: rounds upward, if == 3: rounds down
         :param array_data_type: defines the data type of the array
         :param dct_blocksize: size of the blocks into which the image will be divided during DCT compression
@@ -69,8 +72,12 @@ class Work_with_gppic:
 
         self.file_path: Optional[str] = None
         self.compression_dct_force = compression_dct_force
-        self.compression_quant_force = compression_quant_force
-        self.compression_type = toml_data["compression_type"]  # 0=floor,1=round,2=ceil
+
+        if compression_type is not None:
+            self.compression_type = compression_type
+        else:
+            self.compression_type = toml_data["compression_type"]
+
         self.array_data_type = array_data_type
         self.dct_blocksize = dct_blocksize
         self.brightnes = brightnes
@@ -80,12 +87,19 @@ class Work_with_gppic:
                         [0, -1,  0]
                         ])
         self.sharpness = sharpness
-        self.format_version = toml_data["file_version"]
+
+        if format_version is not None:
+            self.format_version = format_version
+        else:
+            self.format_version = toml_data["file_version"]
 
         self.size_img = 0
         self.size_img_uncompress = 0
         self.size_img_uncompress_DCT = 0
         self.RMSE = 0
+
+        self.compression_quality_brotli = toml_data["qualityB"]
+        self.compression_quality_lzma = toml_data["qualityL"]
 
     class Work_DCT:
         @staticmethod
@@ -144,7 +158,7 @@ class Work_with_gppic:
                 toml.load(filename)
             except FileNotFoundError:
                 logger.debug("Creating TOML file...")
-                data = {"settings": {"file_version": 2, "compression_type": 1}}
+                data = {"settings": {"file_version": 2, "compression_type": 1, "qualityB": 11, "qualityL": 9}}
                 with open(filename, "w", encoding="utf-8") as f:
                     toml.dump(data, f)
 
@@ -228,21 +242,6 @@ class Work_with_gppic:
                 data[mask] -= min(data[mask])
         return data
 
-    def _dtype(self) -> None:
-        """
-        :return: numpy data type
-        """
-        if self.array_data_type == 0:
-            return numpy.uint8
-        elif self.array_data_type == 1:
-            return numpy.int16
-        elif self.array_data_type == 2:
-            return numpy.int32
-        elif self.array_data_type == 3:
-            return numpy.float16
-        elif self.array_data_type == 4:
-            return numpy.float32
-
     def _sharpen(self, img: numpy.ndarray, alpha:float, sigma:float=1.0) -> numpy.ndarray:
         """
         appends sharpness to array of pixels
@@ -270,9 +269,9 @@ class Work_with_gppic:
         width = len(pixel_matrix[0]) if height else 0
         buf = io.BytesIO()
 
-        logger.debug(f"Array type: {self._dtype()}")
+        logger.debug(f"Array type: {numpy.uint8}")
         logger.debug("Creating greyscale...")
-        pixels = numpy.array(pixel_matrix, dtype=self._dtype())
+        pixels = numpy.array(pixel_matrix, dtype=numpy.uint8)
         gray = numpy.dot(pixels, [0.2126, 0.7152, 0.0722])
 
         # Visual effects
@@ -283,7 +282,7 @@ class Work_with_gppic:
 
         self.size_img_uncompress_DCT = len(gray.tobytes())
 
-        if self.format_version == 3:
+        if self.format_version > 1:
 
             logger.debug("Using DCT cumPression...")
             logger.debug(f"DCT block size: {self.dct_blocksize}")
@@ -294,154 +293,60 @@ class Work_with_gppic:
                 for j in range(blocks.shape[1]):
                     blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
 
-            dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
+            dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize,
+                                                    blocks.shape[1] * self.dct_blocksize)
             dct_mat = dct_mat[:orig[0], :orig[1]]
-
             logger.debug("Using quantization...")
-            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type) #using quantization
+            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force,
+                                              self.compression_type)  # using quantization
 
             restored = dct_mat_quantize.astype(numpy.float16)
 
             restored = self._down(restored)
-
-            self.size_img_uncompress = len(restored.tobytes())
-
-            logger.debug("Using brotli compression...")
-
-            compressed = brotli.compress(restored.tobytes(), quality=5)
-
-            self.size_img = len(compressed)
-
-            # Write sizes and data
-            # Header: signature + dimensions
-            buf.write(b"\x89GPC\n")  # CSIGN
-            buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>I', 3)) #version
-            buf.write(struct.pack('>I', width))
-            buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', self.size_img))
-            buf.write(b"A")  # CPIX
-            buf.write(compressed)
-            buf.write(b"TIMAG") # CTXT
-            buf.write(b"E") # CEND
-            buf.seek(0)
-
-            self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
-            logger.debug(f"RMSE: {self.RMSE}")
-
-            logger.debug(f"file size: {self.size_img}bytes")
-            del compressed, restored, gray, pixels, dct_mat, blocks, dct_mat_quantize
-            return buf
-
-        elif self.format_version == 2:
-
-            logger.debug("Using DCT cumPression...")
-            logger.debug(f"DCT block size: {self.dct_blocksize}")
-
-            blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
-
-            for i in range(blocks.shape[0]):
-                for j in range(blocks.shape[1]):
-                    blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
-
-            dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize, blocks.shape[1] * self.dct_blocksize)
-            dct_mat = dct_mat[:orig[0], :orig[1]]
-            logger.debug("Using quantization...")
-            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type) #using quantization
-
-            restored = dct_mat_quantize.astype(numpy.float16)
-
-            restored = self._down(restored)
-
-            self.size_img_uncompress = len(restored.tobytes())
-
-            logger.debug("Using lzma compression...")
-
-            compressed = lzma.compress(restored.tobytes(), preset=9)
-
-            self.size_img = len(compressed)
-
-            # Write sizes and data
-            # Header: signature + dimensions
-            buf.write(b"\x89GPC\n")  # CSIGN
-            buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>I', 2)) #version
-            buf.write(struct.pack('>I', width))
-            buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', self.size_img))
-            buf.write(b"A")  # CPIX
-            buf.write(compressed)
-            buf.write(b"TIMAG") # CTXT
-            buf.write(b"E") # CEND
-            buf.seek(0)
-
-            self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
-            logger.debug(f"RMSE: {self.RMSE}")
-
-            logger.debug(f"file size: {self.size_img}bytes")
-            del compressed, restored, gray, pixels, dct_mat, blocks, dct_mat_quantize
-            return buf
-
-        elif self.format_version == 1:
-            gray_a = gray.copy()
-
-            self.size_img_uncompress = len(gray_a.tobytes())
-
-            logger.debug("Using lzma compression...")
-            compressed = lzma.compress(gray_a.tobytes(), preset=9)
-
-            self.size_img = len(compressed)
-
-            # Write sizes and data
-            # Header: signature + dimensions
-            buf.write(b"\x89GPC\n")  # CSIGN
-            buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>I', 1)) #version
-            buf.write(struct.pack('>I', width))
-            buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', self.size_img))
-            buf.write(b"A")  # CPIX
-            buf.write(compressed)
-            buf.write(b"TIMAG") # CTXT
-            buf.write(b"E") # CEND
-            buf.seek(0)
-
-            self.RMSE = numpy.mean((gray - gray_a) ** 2)
-            logger.debug(f"RMSE: {self.RMSE}")
-
-            logger.debug(f"file size: {self.size_img}bytes")
-            del gray, pixels, compressed
-            return buf
-
-        elif self.format_version == 0:
-
-            self.size_img_uncompress = len(gray.tobytes())
-
-            self.size_img = len(gray.tobytes())
-
-            # Write sizes and data
-            # Header: signature + dimensions
-            buf.write(b"\x89GPC\n")  # CSIGN
-            buf.write(b"O")  # CDAT
-            buf.write(struct.pack('>I', 0)) #version
-            buf.write(struct.pack('>I', width))
-            buf.write(struct.pack('>I', height))
-            buf.write(struct.pack('>I', self.size_img))
-            buf.write(b"A")  # CPIX
-            buf.write(gray.tobytes())
-            buf.write(b"TIMAG") # CTXT
-            buf.write(b"E") # CEND
-            buf.seek(0)
-
-            self.RMSE = 0
-            logger.debug(f"RMSE: {self.RMSE}")
-
-            logger.debug(f"file size: {self.size_img}bytes")
-            del gray, pixels
-            return buf
 
         else:
-            raise ValueError("File format not found")
+            dct_mat = gray.copy()
+            dct_mat_quantize = gray.copy()
+            restored = gray.copy()
+            blocks = None
+
+
+        self.size_img_uncompress = len(restored.tobytes())
+
+
+        if self.format_version == 2 or self.format_version == 1:
+            logger.debug("Using lzma compression...")
+            compressed = lzma.compress(restored.tobytes(), preset=self.compression_quality_lzma)
+
+        elif self.format_version == 3:
+            logger.debug("Using brotli compression...")
+            compressed = brotli.compress(restored.tobytes(), quality=self.compression_quality_brotli)
+
+        elif self.format_version == 0:
+            compressed = gray.copy().tobytes()
+
+        self.size_img = len(compressed)
+
+        # Write sizes and data
+        # Header: signature + dimensions
+        buf.write(b"\x89GPC\n")  # CSIGN
+        buf.write(b"O")  # CDAT
+        buf.write(struct.pack('>I', self.format_version))  # version
+        buf.write(struct.pack('>I', width))
+        buf.write(struct.pack('>I', height))
+        buf.write(struct.pack('>I', self.size_img))
+        buf.write(b"A")  # CPIX
+        buf.write(compressed)
+        buf.write(b"TIMAG")  # CTXT
+        buf.write(b"E")  # CEND
+        buf.seek(0)
+
+        self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
+        logger.debug(f"RMSE: {self.RMSE}")
+
+        logger.debug(f"file size: {self.size_img}bytes")
+        del compressed, restored, gray, pixels, dct_mat, blocks, dct_mat_quantize
+        return buf
 
     @catch_errors
     def convert_to_gpic(self, pixel_matrix: list):
@@ -454,9 +359,9 @@ class Work_with_gppic:
         height = len(pixel_matrix)
         width = len(pixel_matrix[0]) if height else 0
 
-        logger.debug(f"Array type: {self._dtype()}")
+        logger.debug(f"Array type: {numpy.uint8}")
         logger.debug("Creating greyscale...")
-        pixels = numpy.array(pixel_matrix, dtype=self._dtype())
+        pixels = numpy.array(pixel_matrix, dtype=numpy.uint8)
         gray = (0.2126 * pixels[..., 0] +
                 0.7152 * pixels[..., 1] +
                 0.0722 * pixels[..., 2])
@@ -470,8 +375,7 @@ class Work_with_gppic:
 
         self.size_img_uncompress_DCT = len(gray.tobytes())
 
-        if self.format_version == 3:
-
+        if self.format_version > 1:
             logger.debug("Using DCT cumPression...")
             logger.debug(f"DCT block size: {self.dct_blocksize}")
 
@@ -506,88 +410,7 @@ class Work_with_gppic:
             restored = self.Work_DCT._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
             restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
 
-            pixels = numpy.stack([restored, restored, restored], axis=-1)  # creating image
-
-            logger.debug("Using brotli compression...")
-
-            compressed = brotli.compress(raw, quality=6)
-
-            self.size_img = len(compressed)
-
-            self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
-            logger.debug(f"RMSE: {self.RMSE}")
-
-            logger.debug(f"file size: {self.size_img}bytes")
-            del compressed, restored, dct_mat, blocks, dct_mat_quantize
-
-        elif self.format_version == 2:
-
-            logger.debug("Using DCT cumPression...")
-            logger.debug(f"DCT block size: {self.dct_blocksize}")
-
-            blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
-
-            for i in range(blocks.shape[0]):
-                for j in range(blocks.shape[1]):
-                    blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
-
-            dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize,
-                                                    blocks.shape[1] * self.dct_blocksize)
-            dct_mat = dct_mat[:orig[0], :orig[1]]
-
-            logger.debug("Using quantization...")
-            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type)  # using quantization
-
-            restored = dct_mat_quantize.astype(numpy.float16)
-
-            restored = self._down(restored)
-
-            self.size_img_uncompress = len(restored.tobytes())
-
-            raw = numpy.frombuffer(restored, dtype=numpy.float16).reshape((height, width))
-
-            logger.debug("Unblockifying and using IDCT...")
-            blocks2, _ = self.Work_DCT._blockify(raw, block_size=self.dct_blocksize)
-            for i in range(blocks2.shape[0]):
-                for j in range(blocks2.shape[1]):
-                    blocks2[i, j] = self.Work_DCT._idct2(blocks2[i, j])
-
-            restored = self.Work_DCT._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
-            restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
-
-            pixels = numpy.stack([restored, restored, restored], axis=-1)  # creating image
-
-            logger.debug("Using lzma compression...")
-
-            compressed = lzma.compress(raw, preset=9)
-
-            self.size_img = len(compressed)
-
-            self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
-            logger.debug(f"RMSE: {self.RMSE}")
-
-            logger.debug(f"file size: {self.size_img}bytes")
-            del compressed, restored, dct_mat, blocks, dct_mat_quantize
-
-        elif self.format_version == 1:
-
-            self.size_img_uncompress = len(gray.tobytes())
-
-            logger.debug("Using lzma compression...")
-
-            compressed = lzma.compress(gray.tobytes(), preset=9)
-            self.size_img = len(compressed)
-            self.RMSE = numpy.mean((gray - gray) ** 2)
-
-            logger.debug(f"RMSE: {self.RMSE}")
-            logger.debug(f"file size: {self.size_img}bytes")
-
-            restored = numpy.clip(numpy.rint(gray), 0, 255).astype(numpy.uint8)
-            pixels = numpy.stack([restored, restored, restored], axis=-1)  # creating image
-            del compressed
-
-        elif self.format_version == 0:
-
+        else:
             self.size_img_uncompress = len(gray.tobytes())
             self.size_img = len(gray.tobytes())
             self.RMSE = 0
@@ -596,10 +419,31 @@ class Work_with_gppic:
             logger.debug(f"file size: {self.size_img}bytes")
 
             restored = numpy.clip(numpy.rint(gray), 0, 255).astype(numpy.uint8)
-            pixels = numpy.stack([restored, restored, restored], axis=-1)  # creating image
+            compressed = restored.copy().tobytes()
+            dct_mat = gray.copy()
+            dct_mat_quantize = gray.copy()
+            blocks = None
+            raw = restored.tobytes()
 
-        else:
-            raise ValueError("File format not found")
+
+        pixels = numpy.stack([restored, restored, restored], axis=-1)  # creating image
+
+
+        if self.format_version == 3:
+            logger.debug("Using brotli compression...")
+            compressed = brotli.compress(raw, quality=self.compression_quality_brotli)
+
+        elif self.format_version == 2 or self.format_version == 1:
+            logger.debug("Using lzma compression...")
+            compressed = lzma.compress(raw, preset=self.compression_quality_lzma)
+
+        self.size_img = len(compressed)
+
+        self.RMSE = numpy.mean((dct_mat - dct_mat_quantize) ** 2)
+        logger.debug(f"RMSE: {self.RMSE}")
+
+        logger.debug(f"file size: {self.size_img}bytes")
+        del compressed, restored, dct_mat, blocks, dct_mat_quantize
 
         del gray
         return {"pixels" : pixels, "version" : self.format_version, "type" : "IMAG"}
@@ -888,6 +732,9 @@ class Gui:
             debug_menu = tk.Menu()
             edit_format_version = tk.Menu()
             edit_compr_type_menu = tk.Menu()
+            edit_compr_quality = tk.Menu()
+            edit_compr_quality_L = tk.Menu()
+            edit_compr_quality_B = tk.Menu()
 
             file_save_as_menu.add_command(label="Export as .GPIC", command=self.Gui.export_file)
             file_save_as_menu.add_command(label="Export as .PNG", command=self.Gui.export_file_as_png)
@@ -898,10 +745,28 @@ class Gui:
             edit_compr_type_menu.add_radiobutton(label="round floor", command=lambda: self.Gui.On_triggers.on_edit_compression_type(), variable=self.edit_compr_type_menu_var, value=0)
 
             self.edit_format_version_var = tk.IntVar(value=work_with_gppic.format_version)
-            edit_format_version.add_radiobutton(label="3", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=3)
-            edit_format_version.add_radiobutton(label="2", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=2)
-            edit_format_version.add_radiobutton(label="1", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=1)
-            edit_format_version.add_radiobutton(label="0", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=0)
+            edit_format_version.add_radiobutton(label="3 (Brotli & quant)", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=3)
+            edit_format_version.add_radiobutton(label="2 (LZMA & quant)", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=2)
+            edit_format_version.add_radiobutton(label="1 (LZMA)", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=1)
+            edit_format_version.add_radiobutton(label="0 (None)", command=lambda: self.Gui.On_triggers.on_edit_format_version(), variable=self.edit_format_version_var, value=0)
+
+            self.edit_compr_quality_B_var = tk.IntVar(value=work_with_gppic.compression_quality_brotli)
+            self.edit_compr_quality_L_var = tk.IntVar(value=work_with_gppic.compression_quality_lzma)
+
+            # LZMA
+            for i in range(10):
+                if i == 9:
+                    edit_compr_quality_L.add_radiobutton(label=f"{i} (Default)", command=lambda: self.Gui.On_triggers.on_edit_quality('L'), variable=self.edit_compr_quality_L_var, value=i)
+                else:
+                    edit_compr_quality_L.add_radiobutton(label=str(i), command=lambda: self.Gui.On_triggers.on_edit_quality('L'), variable=self.edit_compr_quality_L_var, value=i)
+
+            # BROTLI
+            for i in range(12):
+                if i == 11:
+                    edit_compr_quality_B.add_radiobutton(label=f"{i} (Default)", command=lambda: self.Gui.On_triggers.on_edit_quality('B'), variable=self.edit_compr_quality_B_var, value=i)
+                else:
+                    edit_compr_quality_B.add_radiobutton(label=str(i), command=lambda: self.Gui.On_triggers.on_edit_quality('B'), variable=self.edit_compr_quality_B_var, value=i)
+
 
             file_menu.add_command(label="New", command=self.Gui.re_create_window)
             file_menu.add_cascade(label="Export", menu=file_save_as_menu)
@@ -909,7 +774,11 @@ class Gui:
             file_menu.add_command(label="Exit", command=sys.exit)
 
             edit_menu.add_cascade(label="Compression type", menu=edit_compr_type_menu)
+            edit_menu.add_cascade(label="Compression quality", menu=edit_compr_quality)
             edit_menu.add_cascade(label="Format version", menu=edit_format_version)
+
+            edit_compr_quality.add_cascade(label="Brotli (3v)", menu=edit_compr_quality_B)
+            edit_compr_quality.add_cascade(label="LZMA (2v)", menu=edit_compr_quality_L)
 
             debug_menu.add_command(label="image_data", command=self.Gui.Debug.get_image_data)
             debug_menu.add_command(label="show_image_now", command=self.Gui.Debug.show_image)
@@ -1031,7 +900,17 @@ class Gui:
         def on_edit_format_version(self) -> None:
             work_with_gppic.format_version = self.Gui.Create_widgets.edit_format_version_var.get()
             logger.debug(f"Format version has been edited to {self.Gui.Create_widgets.edit_format_version_var.get()}")
-            work_with_gppic.Work_TOML.edit_toml_data("file_version",  self.Gui.Create_widgets.edit_format_version_var.get())
+            work_with_gppic.Work_TOML.edit_toml_data("file_version", self.Gui.Create_widgets.edit_format_version_var.get())
+
+        def on_edit_quality(self, type: str):
+            if type == "B":
+                work_with_gppic.compression_quality_brotli = self.Gui.Create_widgets.edit_compr_quality_B_var.get()
+                logger.debug(f"Quality compression has been edited to {self.Gui.Create_widgets.edit_compr_quality_B_var.get()}")
+                work_with_gppic.Work_TOML.edit_toml_data("qualityB", self.Gui.Create_widgets.edit_compr_quality_B_var.get())
+            elif type == "L":
+                work_with_gppic.compression_quality_lzma = self.Gui.Create_widgets.edit_compr_quality_L_var.get()
+                logger.debug(f"Quality compression has been edited to {self.Gui.Create_widgets.edit_compr_quality_L_var.get()}")
+                work_with_gppic.Work_TOML.edit_toml_data("qualityL", self.Gui.Create_widgets.edit_compr_quality_L_var.get())
 
 
     class Debug:
@@ -1080,7 +959,6 @@ class Gui:
             '''
             work_with_gppic_virgin = Work_with_gppic(
                 compression_dct_force = 1,
-                compression_quant_force = 1,
                 brightnes = 0,
                 sharpness = 0
             )
