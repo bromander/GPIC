@@ -24,7 +24,7 @@ logger = logging.getLogger("Logger")
 logger.setLevel(logging.DEBUG)
 #logging.disable(logging.CRITICAL)
 
-VERSION = "1.6.1"
+VERSION = "1.6.2"
 
 # pigar generate - create requirements.txt
 # pyinstaller --onefile --add-data "main/GPIC_logo.ico;." --icon=main/GPIC_logo.ico --noconsole --collect-all scipy main/conventer.py
@@ -228,20 +228,6 @@ class Work_with_gppic:
                 data[mask] = numpy.floor(data[mask] / force) * force
         return data
 
-    @staticmethod
-    def _down(data: numpy.ndarray) -> numpy.ndarray:
-        """
-        Shifts pixels
-        :param data: array of pixels
-        """
-        mask = data != 0
-        if min(data[mask]) > 0:
-            if min(data[mask]) > 5:
-                data[mask] -= 5
-            else:
-                data[mask] -= min(data[mask])
-        return data
-
     def _sharpen(self, img: numpy.ndarray, alpha:float, sigma:float=1.0) -> numpy.ndarray:
         """
         appends sharpness to array of pixels
@@ -278,7 +264,6 @@ class Work_with_gppic:
         logger.debug("Applying visual effects...")
         gray += self.brightnes  # editing brightness
         gray = self._sharpen(gray, self.sharpness / 10)  # editing sharpness
-        gray = self._down(gray)
 
         self.size_img_uncompress_DCT = len(gray.tobytes())
 
@@ -289,20 +274,15 @@ class Work_with_gppic:
 
             blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
 
-            for i in range(blocks.shape[0]):
-                for j in range(blocks.shape[1]):
-                    blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
+            blocks = numpy.array([[self.Work_DCT._dct2(blocks[i, j]) for j in range(blocks.shape[1])] for i in range(blocks.shape[0])])
 
             dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize,
                                                     blocks.shape[1] * self.dct_blocksize)
             dct_mat = dct_mat[:orig[0], :orig[1]]
             logger.debug("Using quantization...")
-            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force,
-                                              self.compression_type)  # using quantization
+            dct_mat_quantize = self._quantize(dct_mat, self.compression_dct_force, self.compression_type)  # using quantization
 
             restored = dct_mat_quantize.astype(numpy.float16)
-
-            restored = self._down(restored)
 
         else:
             dct_mat = gray.copy()
@@ -325,6 +305,7 @@ class Work_with_gppic:
         elif self.format_version == 0:
             compressed = gray.copy().tobytes()
 
+
         self.size_img = len(compressed)
 
         # Write sizes and data
@@ -345,7 +326,7 @@ class Work_with_gppic:
         logger.debug(f"RMSE: {self.RMSE}")
 
         logger.debug(f"file size: {self.size_img}bytes")
-        del compressed, restored, gray, pixels, dct_mat, blocks, dct_mat_quantize
+        del compressed, restored, gray, pixels, dct_mat, blocks, dct_mat_quantize, orig
         return buf
 
     @catch_errors
@@ -371,7 +352,6 @@ class Work_with_gppic:
         logger.debug("Applying visual effects...")
         gray += self.brightnes  # editing brightness
         gray = self._sharpen(gray, self.sharpness / 10)  # editing sharpness
-        gray = self._down(gray)
 
         self.size_img_uncompress_DCT = len(gray.tobytes())
 
@@ -381,9 +361,7 @@ class Work_with_gppic:
 
             blocks, orig = self.Work_DCT._blockify(gray, block_size=self.dct_blocksize)
 
-            for i in range(blocks.shape[0]):
-                for j in range(blocks.shape[1]):
-                    blocks[i, j] = self.Work_DCT._dct2(blocks[i, j])
+            blocks = numpy.array([[self.Work_DCT._dct2(blocks[i, j]) for j in range(blocks.shape[1])] for i in range(blocks.shape[0])])
 
             dct_mat = blocks.swapaxes(1, 2).reshape(blocks.shape[0] * self.dct_blocksize,
                                                     blocks.shape[1] * self.dct_blocksize)
@@ -395,17 +373,14 @@ class Work_with_gppic:
 
             restored = dct_mat_quantize.astype(numpy.float16)
 
-            restored = self._down(restored)
-
             self.size_img_uncompress = len(restored.tobytes())
 
             raw = numpy.frombuffer(restored, dtype=numpy.float16).reshape((height, width))
 
             logger.debug("Unblockifying and using IDCT...")
             blocks2, _ = self.Work_DCT._blockify(raw, block_size=self.dct_blocksize)
-            for i in range(blocks2.shape[0]):
-                for j in range(blocks2.shape[1]):
-                    blocks2[i, j] = self.Work_DCT._idct2(blocks2[i, j])
+
+            blocks2 = numpy.array([[self.Work_DCT._idct2(blocks2[i, j]) for j in range(blocks.shape[1])] for i in range(blocks.shape[0])])
 
             restored = self.Work_DCT._unblockify(blocks2, (height, width), block_size=self.dct_blocksize)
             restored = numpy.clip(numpy.rint(restored), 0, 255).astype(numpy.uint8)
@@ -443,9 +418,8 @@ class Work_with_gppic:
         logger.debug(f"RMSE: {self.RMSE}")
 
         logger.debug(f"file size: {self.size_img}bytes")
-        del compressed, restored, dct_mat, blocks, dct_mat_quantize
+        del compressed, restored, dct_mat, blocks, dct_mat_quantize, orig
 
-        del gray
         return {"pixels" : pixels, "version" : self.format_version, "type" : "IMAG"}
 
     @catch_errors
@@ -499,7 +473,10 @@ class Gui:
 
 
     def re_create_window(self) -> None:
+        global gui, work_with_gppic
         self.root.destroy()
+        gui = Gui()
+        work_with_gppic = Work_with_gppic()
         main()
 
 
@@ -925,13 +902,11 @@ class Gui:
             '''
 
             dct_compression_forse_data  = work_with_gppic.compression_dct_force
-            quantization_compression_forse_data = work_with_gppic.compression_quant_force
             compression_type_data = work_with_gppic.compression_type
 
             dct_blocksize = work_with_gppic.dct_blocksize
 
             showinfo(title="get_image_data", message=f"dct_compression_forse : {dct_compression_forse_data}"
-                                                     f"\nquantization_compression_forse_data : {quantization_compression_forse_data}"
                                                      f"\ncompression_type : {compression_type_data}"
                                                      f"\nRMSE : {round(work_with_gppic.RMSE, 6)}"
                                                      f"\ndct_blocksize : {dct_blocksize}"
